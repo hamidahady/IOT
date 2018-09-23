@@ -1,0 +1,1050 @@
+---
+title: "IoT project"
+author: "Hamid"
+date: "May 23, 2018"
+output: html_document
+---
+
+defining functions and loading the required libraries
+```{r}
+  rm(list = ls()) # clear environment
+  cat("\014") # clear console
+  graphics.off()
+library(rio)  
+library(dtwclust)
+library(graph);library(RBGL)
+  
+data_plot<-function(data,start_col,end_col,partition_col,remov_char,Y_label,X_label,flip_clusters){
+    start<-which(colnames(data)== start_col)
+    end<-which(colnames(data)== end_col)
+    
+    clusters_data_clus1<-as.data.frame(colMeans(data[which(data[partition_col]==1),start:end]))
+    clusters_data_clus2<-as.data.frame(colMeans(data[which(data[partition_col]==2),start:end]))
+    clusters_data<-cbind(clusters_data_clus1,clusters_data_clus2)
+    if(toupper(flip_clusters)=="YES"){
+      clusters_data[1]<-(1/clusters_data[,1])
+      clusters_data[2]<-(1/clusters_data[,2])
+    }
+    if(mean(clusters_data[,1])>mean(clusters_data[,2])){
+      clusters_data$mid<-clusters_data[,1]
+      clusters_data[1]<-clusters_data[,2]
+      clusters_data[2]<-clusters_data$mid
+      clusters_data$mid<-NULL
+    }
+    names(clusters_data)<-c("clus_1","clus_2")
+    miny<-min(clusters_data$clus_1,clusters_data$clus_2)
+    maxy<-max(clusters_data$clus_1,clusters_data$clus_2)+abs(max(clusters_data$clus_1,clusters_data$clus_2)-min(clusters_data$clus_1,clusters_data$clus_2)*.2)
+    x<-gsub(remov_char,"",rownames(clusters_data))
+    counter_years<-length(x)
+    
+    start_date<-as.numeric(substr(gsub(remov_char,"",start_col),1,4))
+    end_date<-as.numeric(substr(gsub(remov_char,"",end_col),1,4))
+    
+    X_label<-paste(X_label," (",start_date," - ",end_date,")",sep="")
+    par(mar = c(5,5,2,5),cex.lab=1.6)
+    plot(clusters_data$clus_1,xaxt="n", type="o", pch=0,col="red3",ylim=c(miny,maxy),
+         ylab= Y_label,ann = FALSE, 
+         xlab=X_label,cex=1.2,cex.axis=1.1
+         
+         )
+    
+    line_dist<-4
+    #next line is for tilted labels but for 2002-2016 I may deactive it
+    {
+      if((end_date-start_date)<5){
+        axis(1,at=1:counter_years,labels=x,cex.axis=.9,las=2)
+        line_dist<-4
+      }
+    }
+    
+    mtext(side = 1, text = X_label, line = line_dist,cex=1.2)
+    mtext(side = 2, text = Y_label, line = 3,cex=1.2)
+    
+    
+    par(new = T)
+    plot(clusters_data$clus_2,  type="o", pch=2,axes=F, xlab=NA, ylab=NA,ylim=c(miny,maxy),cex=1.2,lty=2)
+    
+    #axis(side = 4)
+    #mtext(side = 4, line = 3, "Cluster 2")
+    legend("topleft",
+           legend=c("High Performance","Low Performance"),
+           lty=c(2,1), bty = "n",pch=c(2, 0), col=c("black","red3"),cex=1.2)
+    
+  }
+####################
+df_filler<-function(df_less,df_comp){
+      
+      rows_nam_comp<-rownames(df_comp)
+      
+      nam_less<-colnames(df_less)
+      nam_comp<-colnames(df_comp)    
+      
+      rows_nam<-gsub(nam_comp, nam_less, rows_nam_comp)
+      
+      row_start<-which(rows_nam==rownames(df_less)[1])
+      row_end<-which(rows_nam==rownames(df_less)[nrow(df_less)])
+      
+      df_comp[,1]<-NA
+      df_comp[row_start:row_end,1]<-df_less[,1]
+      names(df_comp)<-names(df_less)
+      row.names(df_comp)<-rows_nam
+      
+      return(df_comp)
+    }
+####################
+ 
+RUS_func <- function(input_data){
+
+  Train_Two <- input_data[ which(as.character(input_data$TARGET)=="two"), ]
+  Train_One <- input_data[ which(as.character(input_data$TARGET)=="one"), ]
+  if(nrow(Train_Two)<=nrow(Train_One)){
+    sample_size<-nrow(Train_Two)
+    Train_One<-Train_One[sample(nrow(Train_One), sample_size), ]
+  }else{
+    sample_size<-nrow(Train_One)
+    Train_Two<-Train_Two[sample(nrow(Train_Two), sample_size), ]
+  }
+  input_data<-rbind(Train_One,Train_Two)
+  
+  return(input_data)
+}
+
+# input_object<-mod_svm
+# vars_org<-VarsData_Phase
+###########  
+model_imp_exc <- function(input_object,vars_org){
+  imp_model<-varImp(input_object)
+  imp_model<-as.data.frame(imp_model$importance)
+  imp_model$variables<-rownames(imp_model)
+  imp_model$importance<-as.numeric(imp_model[,1])
+  
+  model_imp<-matrix(0, ncol = 1, nrow = nrow(imp_model))
+  model_imp<-as.data.frame(model_imp)
+  
+  
+  model_imp$variables<-imp_model$variables
+  model_imp$importance<-imp_model$importance
+  model_imp$V1<-NULL 
+  
+  seeker<-model_imp
+  seeker$real_name<-NA
+  
+  seeked<-as.data.frame(vars_org[,1])
+  names(seeked)<-"variables"
+  
+  for (i in 1:nrow(seeker)){
+    for (j in 1:nrow(seeked)) {
+      if(grepl(seeked$variables[j],seeker$variables[i])){
+        if(str_count(seeker$variables[i],"_")==str_count(seeked$variables[j],"_")){
+          seeker$real_name[i]<-as.character(seeked$variables[j])}
+      }
+    }
+  }
+  # It's for the variables that created by us and are not in the original dataset
+  for (i in 1:nrow(seeker)){
+    if(is.na(seeker$real_name[i])){seeker$real_name[i]<-seeker$variables[i]}
+  }
+  str(seeker$importance)
+  seeker<-seeker[c("variables","importance")]
+
+  return(seeker) 
+}
+###########
+
+matrix_filler_2<-function(col_no,filling_matrix,filler_matrix,common_col){
+  common_col<-paste(common_col,"_",col_no,sep="")
+  
+  for(j in filler_matrix$variables){
+    filling_matrix[j,common_col]<-filler_matrix$importance[which(filler_matrix$variables==j)]
+  }
+     
+  return(filling_matrix) 
+}
+###########
+accuracy_cal<-function(actual,predicted){
+  counter<-0
+  for(i in 1:length(actual)){
+    if(actual[i]==predicted[i]){counter<-counter+1}
+  }
+  percent_accuracy<-100*(counter/length(actual))
+  return(percent_accuracy)
+}
+
+###########################################
+
+prepar<-function(data,start_t,min_all){
+  
+  for(i in 1:15){
+
+      data[["time_series"]][["table_ID11"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID11",(start_t:min_all)])
+      data[["time_series"]][["table_ID13"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID13",(start_t:min_all)])
+      data[["time_series"]][["table_ID19"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID19",(start_t:min_all)])
+      data[["time_series"]][["table_ID20"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID20",(start_t:min_all)])
+      data[["time_series"]][["table_ID7"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID7",(start_t:min_all)])
+  }  
+
+  # now, I make a table of observations for the variables
+  template<-matrix(0, ncol = 86, nrow = 15)
+  template<-as.data.frame(template)
+  template$V1<-c(1:15)
+  names(template)<-c("subjects",paste("ts",1:85,sep=""))
+  
+  data_table_ID11<-do.call(rbind.data.frame, data$time_series$table_ID11)
+    names(data_table_ID11)<-c(paste("ts",start_t:50,sep=""))
+    data_table_ID11$subjects<-rownames(data_table_ID11)
+  data_table_ID13<-do.call(rbind.data.frame, data$time_series$table_ID13)
+      names(data_table_ID13)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID13$subjects<-rownames(data_table_ID13)
+  data_table_ID19<-do.call(rbind.data.frame, data$time_series$table_ID19)
+      names(data_table_ID19)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID19$subjects<-rownames(data_table_ID19)
+  data_table_ID20<-do.call(rbind.data.frame, data$time_series$table_ID20)
+      names(data_table_ID20)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID20$subjects<-rownames(data_table_ID20)
+  data_table_ID7<-do.call(rbind.data.frame, data$time_series$table_ID7)
+      names(data_table_ID7)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID7$subjects<-rownames(data_table_ID7)
+  
+    data_table_ID3.4.5.6<-template[,1:2]
+  data_table_ID3.4.5.6$ts1<-NULL
+
+  # recording gender age weight height of subject which is same in all of time points
+
+  for(i in 1:15){
+    data_table_ID3.4.5.6[i,"ID3"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID3",1])
+    data_table_ID3.4.5.6[i,"ID4"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID4",1])
+    data_table_ID3.4.5.6[i,"ID5"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID5",1])
+    data_table_ID3.4.5.6[i,"ID6"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID6",1])
+      }
+
+  data$data_table_ID11<-data_table_ID11
+  data$data_table_ID13<-data_table_ID13
+  data$data_table_ID19<-data_table_ID19
+  data$data_table_ID20<-data_table_ID20  
+  data$data_table_ID7<-data_table_ID7
+  
+  data$data_table_ID3.4.5.6<-data_table_ID3.4.5.6
+
+  return(data)
+  
+}
+
+###########################################
+# data_series<-data_obj$data_table_ID11
+# data_clust<-clust_part_ID11@cluster
+# cluss_one<-"low"
+
+ flipper<-function(data_series,data_clust,cluss_one){
+   
+   min_1<-0
+   min_2<-0
+   work_1<-sum(which(data_clust==1))
+   work_2<-sum(which(data_clust==2))
+   i<-1
+   
+   if(work_1*work_2>0){
+     for(i in which(data_clust==1)){
+       min_1<- min_1+mean(as.numeric(data_series[i,1:(ncol(data_series)-1)]))}
+     for(j in which(data_clust==2)){
+       min_2<- min_2+mean(as.numeric(data_series[j,1:(ncol(data_series)-1)]))}
+     
+     min_1<-min_1/length(which(data_clust==1))
+     min_2<-min_2/length(which(data_clust==2))
+   }
+   
+   
+   
+   if(cluss_one=="low" && min_1>min_2){
+     temp<-data_clust
+     temp[which(data_clust==1)]<-2
+     temp[which(data_clust==2)]<-1
+     data_clust<-temp
+   }
+   if(cluss_one=="high" && min_1<min_2){
+     temp<-data_clust
+     temp[which(data_clust==1)]<-2
+     temp[which(data_clust==2)]<-1
+     data_clust<-temp
+   }
+   return(data_clust)
+   
+ }
+############################################
+# centr_par<-"dba"
+# dis_par<-"sbd"
+# data_obj<-data
+  
+clusterer<-function(data_obj,centr_par,dis_par){
+acf_fun <- function(dat, ...) {lapply(dat, function(x) as.numeric(acf(x, lag.max = 100L, plot = FALSE)$acf))}
+
+  for(i in c(7,11,13,19,20)){
+  assign(paste("clust_part_ID",i,sep="") ,tsclust(data_obj[["time_series"]][[paste("table_ID",i,sep="")]], k = 2L, 
+                                          distance = dis_par, centroid = centr_par, 
+                                          seed = 123, trace = TRUE,
+                                          control = partitional_control(pam.precompute = FALSE),
+                                          args = tsclust_args(dist = list(window.size = 2L)))
+                                          )
+    
+  # assign(paste("clust_fuz_ID",i,sep="") ,tsclust(table_ID9, type = "fuzzy", k = 2L,
+  #                                          preproc = acf_fun, distance = "dtw", seed = 123))
+
+  }
+#flipper input change
+temp11<-flipper(data_obj$data_table_ID11,clust_part_ID11@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"11",sep="_")]<-temp11
+
+temp13<-flipper(data_obj$data_table_ID13,clust_part_ID13@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"13",sep="_")]<-temp13
+
+temp19<-flipper(data_obj$data_table_ID19,clust_part_ID19@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"19",sep="_")]<-temp19
+
+temp20<-flipper(data_obj$data_table_ID20,clust_part_ID20@cluster,"high")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"20",sep="_")]<-temp20
+
+temp7<-flipper(data_obj$data_table_ID7,clust_part_ID7@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"7",sep="_")]<-temp7
+
+#it's for taking care of NAs
+if(is.na(table(temp11)[1])){clust11_freq_1<-0}else{clust11_freq_1<-table(temp11)[1]}
+if(is.na(table(temp11)[2])){clust11_freq_2<-0}else{clust11_freq_2<-table(temp11)[2]}
+
+if(is.na(table(temp13)[1])){clust13_freq_1<-0}else{clust13_freq_1<-table(temp13)[1]}
+if(is.na(table(temp13)[2])){clust13_freq_2<-0}else{clust13_freq_2<-table(temp13)[2]}
+
+if(is.na(table(temp19)[1])){clust19_freq_1<-0}else{clust19_freq_1<-table(temp19)[1]}
+if(is.na(table(temp19)[2])){clust19_freq_2<-0}else{clust19_freq_2<-table(temp19)[2]}
+
+if(is.na(table(temp20)[1])){clust20_freq_1<-0}else{clust20_freq_1<-table(temp19)[1]}
+if(is.na(table(temp20)[2])){clust20_freq_2<-0}else{clust20_freq_2<-table(temp19)[2]}
+
+if(is.na(table(temp7)[1])){clust7_freq_1<-0}else{clust7_freq_1<-table(temp7)[1]}
+if(is.na(table(temp7)[2])){clust7_freq_2<-0}else{clust7_freq_2<-table(temp7)[2]}
+
+
+clus11<-abs(clust11_freq_1-clust11_freq_2)
+clus13<-abs(clust13_freq_1-clust13_freq_2)
+clus19<-abs(clust19_freq_1-clust19_freq_2)
+clus20<-abs(clust20_freq_1-clust20_freq_2)
+clus7<-abs(clust7_freq_1-clust7_freq_2)
+
+
+max_cluss<-max(clus11,clus13,clus19,clus20,clus7)
+
+data_obj$max_cluss<-max_cluss
+
+return(data_obj)
+
+}
+
+compare_clus<-function(data_obj){
+
+resul_cluss<-as.data.frame(matrix(0, ncol = 3, nrow = 45))
+names(resul_cluss)<-c("dis_par","centr_par","cluss_diff")
+
+
+clust_ID7<-data_obj$data_table_ID3.4.5.6
+clust_ID11<-data_obj$data_table_ID3.4.5.6
+clust_ID13<-data_obj$data_table_ID3.4.5.6
+clust_ID19<-data_obj$data_table_ID3.4.5.6
+clust_ID20<-data_obj$data_table_ID3.4.5.6
+  
+
+row_counter<-0
+
+for(i in c("mean", "median", "shape", "dba", "pam")){
+  for(j in c("dtw","dtw2","dtw_basic","dtw_lb","lbk","lbi","sbd","gak","sdtw")){
+    row_counter<-row_counter+1
+    resul_cluss[row_counter,"dis_par"]<-j
+    resul_cluss[row_counter,"centr_par"]<-i
+    temp<-clusterer(data_obj,i,j)
+    resul_cluss[row_counter,"cluss_diff"]<-temp[["max_cluss"]]
+    clust_ID7[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]
+    clust_ID11[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]
+    clust_ID13[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]
+    clust_ID19[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]
+    clust_ID20[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]
+    
+    
+    perf_711<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_713<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_719<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_720<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_7<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_11<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]))
+    perf_13<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]))
+    perf_19<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]))
+    perf_20<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]))
+    
+    
+      temp7<-length(abs(perf_7[which(perf_7$Var1==1),"Freq"]-perf_7[which(perf_7$Var1==2),"Freq"]))
+      if(temp7==0){temp7<-15}else{temp7<-abs(perf_7[which(perf_7$Var1==1),"Freq"]-perf_7[which(perf_7$Var1==2),"Freq"])}
+      resul_cluss$diff_7[row_counter]<-temp7
+      
+      temp11<-length(abs(perf_11[which(perf_11$Var1==1),"Freq"]-perf_11[which(perf_11$Var1==2),"Freq"]))
+      if(temp11==0){temp11<-15}else{temp11<-abs(perf_11[which(perf_11$Var1==1),"Freq"]-perf_11[which(perf_11$Var1==2),"Freq"])}
+      resul_cluss$diff_11[row_counter]<-temp11
+      
+      temp13<-length(abs(perf_13[which(perf_13$Var1==1),"Freq"]-perf_13[which(perf_13$Var1==2),"Freq"]))
+      if(temp13==0){temp13<-15}else{temp13<-abs(perf_13[which(perf_13$Var1==1),"Freq"]-perf_13[which(perf_13$Var1==2),"Freq"])}
+      resul_cluss$diff_13[row_counter]<-temp13
+      
+      temp19<-length(abs(perf_19[which(perf_19$Var1==1),"Freq"]-perf_19[which(perf_19$Var1==2),"Freq"]))
+      if(temp19==0){temp19<-15}else{temp19<-abs(perf_19[which(perf_19$Var1==1),"Freq"]-perf_19[which(perf_19$Var1==2),"Freq"])}
+      resul_cluss$diff_19[row_counter]<-temp19
+      
+      temp20<-length(abs(perf_20[which(perf_20$Var1==1),"Freq"]-perf_20[which(perf_20$Var1==2),"Freq"]))
+      if(temp20==0){temp20<-15}else{temp20<-abs(perf_20[which(perf_20$Var1==1),"Freq"]-perf_20[which(perf_20$Var1==2),"Freq"])}
+      resul_cluss$diff_20[row_counter]<-temp20
+
+    
+    # resul_cluss$over_711[row_counter]<-max((perf_711[which(perf_711$Var1==1),"Freq"]+perf_711[which(perf_711$Var1==4),"Freq"]),perf_711[which(perf_711$Var1==2),"Freq"])
+    # resul_cluss$over_713[row_counter]<-max((perf_713[which(perf_713$Var1==1),"Freq"]+perf_713[which(perf_713$Var1==4),"Freq"]),perf_713[which(perf_713$Var1==2),"Freq"])
+    # resul_cluss$over_719[row_counter]<-max((perf_719[which(perf_719$Var1==1),"Freq"]+perf_719[which(perf_719$Var1==4),"Freq"]),perf_719[which(perf_719$Var1==2),"Freq"])
+    # resul_cluss$over_720[row_counter]<-max((perf_720[which(perf_720$Var1==1),"Freq"]+perf_720[which(perf_720$Var1==4),"Freq"]),perf_720[which(perf_720$Var1==2),"Freq"])
+      
+    # I have to do it to find the overlap because 
+    if(length(perf_711[which(perf_711$Var1==1),"Freq"])==1){over_711_1<-perf_711[which(perf_711$Var1==1),"Freq"]}else{over_711_1<-0}
+    if(length(perf_713[which(perf_713$Var1==1),"Freq"])==1){over_713_1<-perf_713[which(perf_713$Var1==1),"Freq"]}else{over_713_1<-0} 
+    if(length(perf_719[which(perf_719$Var1==1),"Freq"])==1){over_719_1<-perf_719[which(perf_719$Var1==1),"Freq"]}else{over_719_1<-0}
+    if(length(perf_720[which(perf_720$Var1==1),"Freq"])==1){over_720_1<-perf_720[which(perf_720$Var1==1),"Freq"]}else{over_720_1<-0}  
+      
+    if(length(perf_711[which(perf_711$Var1==4),"Freq"])==1){over_711_4<-perf_711[which(perf_711$Var1==4),"Freq"]}else{over_711_4<-0}
+    if(length(perf_713[which(perf_713$Var1==4),"Freq"])==1){over_713_4<-perf_713[which(perf_713$Var1==4),"Freq"]}else{over_713_4<-0} 
+    if(length(perf_719[which(perf_719$Var1==4),"Freq"])==1){over_719_4<-perf_719[which(perf_719$Var1==4),"Freq"]}else{over_719_4<-0}
+    if(length(perf_720[which(perf_720$Var1==4),"Freq"])==1){over_720_4<-perf_720[which(perf_720$Var1==4),"Freq"]}else{over_720_4<-0} 
+    
+    resul_cluss$over_711[row_counter]<-(over_711_1+over_711_4)
+    resul_cluss$over_713[row_counter]<-(over_713_1+over_713_4)
+    resul_cluss$over_719[row_counter]<-(over_719_1+over_719_4)
+    resul_cluss$over_720[row_counter]<-(over_720_1+over_720_4)
+  }
+}
+
+data_obj$resul_cluss<-resul_cluss
+data_obj$clust_ID7<-clust_ID7
+data_obj$clust_ID11<-clust_ID11
+data_obj$clust_ID13<-clust_ID13
+data_obj$clust_ID19<-clust_ID19
+data_obj$clust_ID20<-clust_ID20
+
+
+
+return(data_obj)
+}
+
+# data<-regular_pred11$resul_prob
+# TARGET<-"TARGET"
+# vars<-c("svm", "rf" ,"nnet","tan") 
+# ensembler<-"log_ens"
+# B_alg<-"none"
+# cntr_type<-"simple"
+# method_pred<-"ensemble"
+
+leave_out<-function(data,TARGET,vars,ensembler,B_alg,cntr_type,method_pred){
+  #next line is just for finding threshold of prediction
+  if(method_pred=="regular"){
+    data$TARGET01<-as.numeric(data$TARGET)
+    
+    data$TARGET<-as.factor(data$TARGET)
+    levels(data$TARGET)[1] <- "one"
+    levels(data$TARGET)[2] <- "two"
+    }
+  
+  data$TARGET<-as.factor(data$TARGET)
+  
+  n_rows<-nrow(data)
+  
+  library(caret)
+  # next library is for discretize function
+  library(arules)
+  # the following library is for loading strcount in variable importance function
+  library(stringr)
+  
+  # the following library is for ROC / area under the curve calculation
+  library(pROC)
+  
+  if(cntr_type=="simple"){
+    control_<- trainControl(method = "none",  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE)}
+  if(cntr_type=="simplegbm"){
+    control_<- trainControl(method = "cv", number = 1, savePredictions = TRUE,
+                            verboseIter = FALSE,classProbs = TRUE, summaryFunction = twoClassSummary)
+  }
+  
+  if(cntr_type=="simple_roc"){
+    control_<- trainControl(method = "none",  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  if(cntr_type=="repeatedcv_roc"){
+    control_<- trainControl(method="repeatedcv", number=2, repeats=5,  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  if(cntr_type=="cv_roc"){
+    control_<- trainControl(method = "cv", number = 2, savePredictions = TRUE,
+                            verboseIter = FALSE,classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  
+  resul_prob<-matrix(0, ncol = 8, nrow = n_rows)
+  resul_prob<-as.data.frame(resul_prob)
+  names(resul_prob) <- c("ID","TARGET","TARGET01","log","svm","rf","nnet","tan")
+  resul_prob$TARGET<-data$TARGET
+  resul_prob$ID<-rownames(resul_prob)
+  resul_prob$TARGET01<-data$TARGET01
+  
+  resul_raw<-resul_prob
+  
+
+  resul_svm_imp<-matrix(0, ncol = n_rows, nrow = length(vars))
+  resul_svm_imp<-as.data.frame(resul_svm_imp)
+  names(resul_svm_imp) <- paste("subject_", 1:n_rows, sep = "")
+  rownames(resul_svm_imp)<-vars
+  
+  resul_rf_imp<-resul_svm_imp
+  resul_nnet_imp<-resul_svm_imp
+  resul_tan_imp<-resul_svm_imp
+  resul_log_imp<-resul_svm_imp
+  
+  tan_vars<-vars
+  
+  
+  formula_format<-paste("TARGET ~ ",paste(vars, collapse="+"),sep = "")
+  formula<-as.formula(formula_format)
+  
+  VarsData_Phase<-as.data.frame(vars)
+  names(VarsData_Phase)<-"variables"
+  
+  
+  major_data<-list()
+  all_models<-list()
+  
+  # Recording train and test folds
+  major_data$data_folded<-data
+  #i<-2
+
+  for ( i in 1: n_rows){
+    test_data<-data[data$ID == i,]
+    train_data<-data[data$ID != i,]
+
+    tt<-as.data.frame(table(train_data$TARGET))
+    #table(train_data$TARGET)
+    common<-tt$Freq[1]
+    rare<-tt$Freq[2]
+    k<-1
+    if(common<rare){
+      temp_<-common
+      common<-rare
+      rare<-temp_
+    }
+    if(B_alg=="RUS"){
+      train_data<-RUS_func(train_data)
+      #table(train_data$TARGET)
+      # Recording the row id of RUS data
+      # RUS_fold<-paste(c("RUS_id_fold_",i),collapse = "")
+      # major_data[[RUS_fold]]<-train_data$id
+    }
+
+    if(B_alg=="SMOTE"){
+      train_data$TARGET<-as.factor(train_data$TARGET)
+      H_por_low<-1
+      H_por_high<-1
+      H_por_low<-(1/H_por_low)
+      H_por_high<-H_por_high*100
+      perc_over<-100*(common-rare)/(rare*H_por_low)*k
+      perc_under<-100*(1/perc_over)*common
+      table(train_data$TARGET)
+      row_no<-nrow(train_data)
+      smoted_data<-DMwR::SMOTE(TARGET ~ ., train_data, perc.over = perc_over,perc.under = (((perc_over/100)+1)/(perc_over/100))*H_por_high)
+      train_data<-smoted_data[complete.cases(smoted_data), ]
+    }
+
+    #===================
+
+
+    if(method_pred=="regular"){
+      mod_log <-caret::train(formula,  data=train_data, method="glm", family="binomial",
+                             trControl = control_, tuneLength = 5)
+
+      mod_rf<-caret::train(formula,  data=train_data, method="rf",
+                           trControl = control_, tuneGrid=expand.grid(mtry = ncol(train_data)-4),
+                           tuneLength = 5)
+
+      svm_cost<-.5
+      svm_sigma<-.0001
+
+
+      
+      if(class(try(
+      
+      mod_svm<-caret::train(formula,  data=train_data, method="svmRadial", family="binomial",
+                            trControl = control_,  tuneGrid=expand.grid(C=svm_cost, sigma=svm_sigma),
+                            tuneLength = 5)
+      ))=="try-error"){
+      mod_svm<-caret::train(formula,  data=train_data, method="svmLinear2", family="binomial",
+                            trControl = control_,  tuneGrid=expand.grid(cost=svm_cost),
+                            tuneLength = 5)
+      }
+
+      mod_nnet<-caret::train(formula,  data=train_data, method="nnet", family="binomial",
+                             trControl = control_,  tuneGrid=expand.grid(size=5, decay=0.1), MaxNWts=20000,
+                             tuneLength = 5)
+      ##===making data ready for TAN
+      # disceretizing train and test
+
+      data_tan_train<-train_data
+      y_tr<-data_tan_train$TARGET
+      data_tan_train$TARGET<-NULL
+      data_tan_train$folds<-NULL
+      data_tan_train$type<-"tr"
+
+      data_tan_test<-test_data
+      y_ts<-data_tan_test$TARGET
+      data_tan_test$TARGET<-NULL
+      data_tan_test$folds<-NULL
+      data_tan_test$type<-"ts"
+      data_tan<-rbind(data_tan_train,data_tan_test)
+
+
+
+      for(j in 1:(ncol(data_tan)-1)){
+        if(is.numeric(data_tan_train[,j])){if(is.numeric(data_tan[,j])){
+
+          tester<-as.data.frame(data_tan[,j])
+          if(tester[1,1]!=tester[nrow(data_tan),1]){
+            data_tan[,j]<-discretize(data_tan[,j],method="interval",categories = floor(log(nrow(data_tan))))}else{
+              data_tan[,j]<-discretize(data_tan[,j],method="interval",categories = 1)
+            }
+        }
+        }
+      }
+
+      data_tan_train<-data_tan[which(data_tan$type=="tr"),]
+      data_tan_test<-data_tan[which(data_tan$type=="ts"),]
+      data_tan_train$type<-NULL
+      data_tan_test$type<-NULL
+
+      data_tan_train<-data_tan_train[, which(names(data_tan_train) %in% tan_vars)]
+      mod_tan <- caret::train(data_tan_train, y_tr, method="tan",
+                              trControl = control_, tuneGrid = expand.grid(score= "aic", smooth=0.5),
+                              tuneLength = 5)
+
+
+      {
+        if(class(try(varImp(mod_svm),silent = TRUE))!="try-error"){
+          resul_svm_imp<-matrix_filler_2(i,resul_svm_imp,model_imp_exc(mod_svm,VarsData_Phase),"subject")}
+        resul_raw[i,"svm"]<-as.character(predict(mod_svm, newdata=test_data, type="raw"))
+        resul_prob[i,"svm"]<-predict(mod_svm, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_log),silent = TRUE))!="try-error"){
+          resul_log_imp<-matrix_filler_2(i,resul_log_imp,model_imp_exc(mod_log,VarsData_Phase),"subject")}
+        resul_raw[i,"log"]<-as.character(predict(mod_log, newdata=test_data, type="raw"))
+        resul_prob[i,"log"]<-predict(mod_log, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_nnet),silent = TRUE))!="try-error"){
+          resul_nnet_imp<-matrix_filler_2(i,resul_nnet_imp,model_imp_exc(mod_nnet,VarsData_Phase),"subject")}
+        resul_raw[i,"nnet"]<-as.character(predict(mod_nnet, newdata=test_data, type="raw"))
+        resul_prob[i,"nnet"]<-predict(mod_nnet, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_tan),silent = TRUE))!="try-error"){
+          resul_tan_imp<-matrix_filler_2(i,resul_tan_imp,model_imp_exc(mod_tan,VarsData_Phase),"subject")}
+        resul_raw[i,"tan"]<-as.character(predict(mod_tan, newdata=data_tan_test, type="raw"))
+        resul_prob[i,"tan"]<-predict(mod_tan, newdata=data_tan_test, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_rf),silent = TRUE))!="try-error"){
+          resul_rf_imp<-matrix_filler_2(i,resul_rf_imp,model_imp_exc(mod_rf,VarsData_Phase),"subject")}
+        resul_raw[i,"rf"]<-as.character(predict(mod_rf, newdata=test_data, type="raw"))
+        resul_prob[i,"rf"]<-predict(mod_rf, newdata=test_data, type="prob")[2]
+      }
+
+
+    }
+
+    if(ensembler=="svm_ens" & method_pred=="ensemble"){
+      svm_cost<-.5
+      svm_sigma<-.0001
+      ens<-caret::train(formula,  data=train_data, method="svmRadial", family="binomial",
+                        trControl = control_,  tuneGrid=expand.grid(C=svm_cost, sigma=svm_sigma),
+                        tuneLength = 5)
+    }
+
+    if(ensembler=="log_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="glm", family="binomial",
+                        trControl = control_, tuneLength = 5)
+    }
+
+    if(ensembler=="nnet_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="nnet", family="binomial",
+                        trControl = control_,  tuneGrid=expand.grid(size=5, decay=0.1), MaxNWts=20000,
+                        tuneLength = 5)
+    }
+
+    if(ensembler=="rf_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="rf",
+                        trControl = control_, tuneGrid=expand.grid(mtry = ncol(train_data)-4),
+                        tuneLength = 5)
+    }
+
+    if(method_pred=="ensemble"){
+      resul_raw[i,paste(method_pred,ensembler,sep="_")]<-as.character(predict(ens, newdata=test_data, type="raw"))
+      resul_prob[i,paste(method_pred,ensembler,sep="_")]<-predict(ens, newdata=test_data, type="prob")[2]
+    }
+
+
+  }
+  #end of predicting part
+
+  performance<-matrix(0, ncol = 4, nrow = 6)
+  performance<-as.data.frame(performance)
+
+  row.names(performance) <- c("log","rf","nnet","svm","tan",paste(method_pred,ensembler,sep="_"))
+  names(performance)<-c("accuracy","sensitivity","specificity","auc")
+  
+  if(method_pred=="ensemble"){
+    performance<-performance[6,]
+  }
+  
+  if(method_pred=="regular"){
+    performance<-performance[1:5,]
+  }
+
+  if(method_pred=="regular"){
+    performance["log","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$log)
+    performance["rf","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$rf)
+    performance["nnet","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$nnet)
+    performance["svm","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$svm)
+    performance["tan","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$tan)
+
+    performance["log","sensitivity"]<-caret:: sensitivity(as.factor(resul_raw$log),resul_raw$TARGET)
+    performance["rf","sensitivity"]<-caret:: sensitivity(as.factor(resul_raw$rf),resul_raw$TARGET)
+    performance["nnet","sensitivity"]<-caret:: sensitivity(as.factor(resul_raw$nnet),resul_raw$TARGET)
+    performance["svm","sensitivity"]<-caret:: sensitivity(as.factor(resul_raw$svm),resul_raw$TARGET)
+    performance["tan","sensitivity"]<-caret:: sensitivity(as.factor(resul_raw$tan),resul_raw$TARGET)
+
+    performance["log","specificity"]<-caret:: specificity(as.factor(resul_raw$log),resul_raw$TARGET)
+    performance["rf","specificity"]<-caret:: specificity(as.factor(resul_raw$rf),resul_raw$TARGET)
+    performance["nnet","specificity"]<-caret:: specificity(as.factor(resul_raw$nnet),resul_raw$TARGET)
+    performance["svm","specificity"]<-caret:: specificity(as.factor(resul_raw$svm),resul_raw$TARGET)
+    performance["tan","specificity"]<-caret:: specificity(as.factor(resul_raw$tan),resul_raw$TARGET)
+
+    performance["log","auc"]<- as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$log)))
+    performance["rf","auc"]<- as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$rf)))
+    performance["nnet","auc"]<-as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$nnet)))
+    performance["svm","auc"]<- as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$svm)))
+    performance["tan","auc"]<- as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$tan)))}
+
+  if(method_pred=="ensemble"){
+    performance[paste(method_pred,ensembler,sep="_"),"accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw[,paste(method_pred,ensembler,sep="_")])
+    performance[paste(method_pred,ensembler,sep="_"),"sensitivity"]<-caret:: sensitivity(as.factor(resul_raw[,paste(method_pred,ensembler,sep="_")]),resul_raw$TARGET)
+    performance[paste(method_pred,ensembler,sep="_"),"specificity"]<-caret:: specificity(as.factor(resul_raw[,paste(method_pred,ensembler,sep="_")]),resul_raw$TARGET)
+    performance[paste(method_pred,ensembler,sep="_"),"auc"]<-as.numeric(pROC::auc(roc(resul_raw$TARGET,resul_prob[,paste(method_pred,ensembler,sep="_")])))
+  }
+
+  results<-list()
+  results$performance<-performance
+  results$resul_prob<-resul_prob
+  results$resul_raw<-resul_raw
+  
+  if(method_pred=="regular"){
+  results$resul_svm_imp<-resul_svm_imp
+  results$resul_tan_imp<-resul_tan_imp
+  results$resul_rf_imp<-resul_rf_imp
+  results$resul_log_imp<-resul_log_imp
+  results$resul_nnet_imp<-resul_nnet_imp}
+  
+  if(method_pred=="ensemble"){
+    results$resul_prob<-results$resul_prob[c("ID","TARGET","TARGET01",paste(method_pred,ensembler,sep="_"))]
+    results$resul_raw<-results$resul_raw[c("ID","TARGET","TARGET01",paste(method_pred,ensembler,sep="_"))]
+  }
+  
+
+  
+  return(results)
+}
+##################
+
+```
+
+bringing the data
+```{r}
+# os<-"mac"
+# os<-"OS SERVER"
+os<-"windows"
+# os<-"mac"
+if(os=="windows"){
+save_folder<-"C:/Users/hza0020/OneDrive - Auburn University/IOT/data"}
+if(os=="mac"){
+save_folder<-"/Users/hamid/OneDrive - Auburn University/IOT/data"}
+
+#importing the data of subject and merge into a list variable
+subjects<-list()
+data_obj<-list()
+for(i in 1:15){
+  temp_table<-import(paste(save_folder, "/Subject ",i,".xlsx",sep=""))[,2:86]
+  rownames(temp_table)<-c("ID2","ID3","ID4","ID5","ID6","ID7","ID8","ID9","ID10","ID11","ID12","ID13","ID14","ID15","ID16",
+            "ID17","ID18","ID19","ID20","ID21","ID22","ID23","ID24","ID25","ID26","ID27","ID28")
+  subjects[[paste("subject",i,sep = "")]]<-temp_table
+  
+}
+data_obj$subjects<-subjects
+  
+  table_ID11<-list()
+  table_ID13<-list()
+  table_ID19<-list()
+  table_ID20<-list()
+  table_ID7<-list()
+  
+  event_length1<-ncol(data_obj$subjects$subject1)
+  event_length2<-ncol(data_obj$subjects$subject1)
+  event_length3<-ncol(data_obj$subjects$subject1)
+  event_length4<-ncol(data_obj$subjects$subject1)
+  event_length5<-ncol(data_obj$subjects$subject1)
+  
+  for(i in 1:15){
+        table_ID11[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID11",])
+        if(sum(complete.cases(table_ID11[[i]]))<event_length1){event_length1<-sum(complete.cases(table_ID11[[i]]))}
+
+        table_ID13[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID13",])
+        if(sum(complete.cases(table_ID13[[i]]))<event_length2){event_length2<-sum(complete.cases(table_ID13[[i]]))}
+
+        table_ID19[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID19",])
+        if(sum(complete.cases(table_ID19[[i]]))<event_length3){event_length3<-sum(complete.cases(table_ID19[[i]]))}
+
+        table_ID20[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID20",])
+        if(sum(complete.cases(table_ID20[[i]]))<event_length4){event_length4<-sum(complete.cases(table_ID20[[i]]))}
+
+        table_ID7[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID7",])
+        if(sum(complete.cases(table_ID7[[i]]))<event_length5){event_length5<-sum(complete.cases(table_ID7[[i]]))}
+  }
+  
+  min_all<-min(event_length1,event_length2,event_length3,event_length4,event_length5)
+  start_t<-4
+  
+  time_series<-list()
+  for(i in c(7,11,13,19,20)){
+    time_series[[paste("table_ID",i,sep="")]]<-eval(parse(text=paste("table_ID",i,sep="")))
+  }
+  data_obj$time_series<-time_series
+
+  rm(list = c("subjects","time_series","table_ID11","table_ID13","table_ID19","table_ID20","table_ID7","event_length1","event_length2",
+              "event_length3","event_length4","event_length5","temp_table"))
+  
+
+  
+```
+
+binomial clustering
+```{r}
+#partitional clustering
+# centroid should be one of "mean", "median", "shape", "dba", "pam"
+
+set.seed(31)
+#set.seed(101)
+start_t<-1
+data<-prepar(data_obj,start_t,min_all)
+obj_1<-compare_clus(data)
+t1_perf<-obj_1[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-2
+data<-prepar(data_obj,start_t,min_all)
+obj_2<-compare_clus(data)
+t2_perf<-obj_2[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-3
+data<-prepar(data_obj,start_t,min_all)
+obj_3<-compare_clus(data)
+t3_perf<-obj_3[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-4
+data<-prepar(data_obj,start_t,min_all)
+obj_4<-compare_clus(data)
+t4_perf<-obj_4[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-5
+data<-prepar(data_obj,start_t,min_all)
+obj_5<-compare_clus(data)
+t5_perf<-obj_5[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-6
+data<-prepar(data_obj,start_t,min_all)
+obj_6<-compare_clus(data)
+t6_perf<-obj_6[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-7
+data<-prepar(data_obj,start_t,min_all)
+obj_7<-compare_clus(data)
+t7_perf<-obj_7[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-8
+data<-prepar(data_obj,start_t,min_all)
+obj_8<-compare_clus(data)
+t8_perf<-obj_8[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(31)
+#set.seed(101)
+start_t<-9
+data<-prepar(data_obj,start_t,min_all)
+obj_9<-compare_clus(data)
+t9_perf<-obj_9[["resul_cluss"]]
+rm(list=c("data"))
+
+
+
+
+
+#distance types:
+# "dtw": DTW, optionally with a Sakoe-Chiba/Slanted-band constraint. Done with dtw::dtw().
+# "dtw2": DTW with L2 norm and optionally a Sakoe-Chiba/Slanted-band constraint. See dtw2().
+# "dtw_basic": A custom version of DTW with less functionality, but faster. See dtw_basic().
+# "dtw_lb": DTW with L1 or L2 norm and optionally a Sakoe-Chiba constraint. Some computations
+# are avoided by first estimating the distance matrix with Lemire's lower bound and then
+# iteratively refining with DTW. See dtw_lb(). Not suitable for pam.precompute = TRUE nor
+# hierarchical clustering.
+# "lbk": Keogh's lower bound for DTW with either L1 or L2 norm for the Sakoe-Chiba constraint. See lb_keogh().
+# "lbi": Lemire's lower bound for DTW with either L1 or L2 norm for the Sakoe-Chiba constraint. See lb_improved().
+# "sbd": Shape-based distance. See SBD().
+# "gak": Global alignment kernels. See GAK().
+# "sdtw": Soft-DTW. See sdtw().
+
+#tadpole did not merge so I disregarded, here is the code:
+
+# for(i in c(9,11,17,18)){
+# assign(paste("clust_tadpole_ID",i,sep="") ,tsclust(eval(parse(text= paste("table_ID",i,sep=""))), type = "tadpole", k = 2L,
+#                                             trace = TRUE,
+#   control = tadpole_control(dc = 55, window.size = 15L)))}
+# data_table_ID9$tadpole<-clust_tadpole_ID9@cluster
+# data_table_ID11$tadpole<-clust_tadpole_ID11@cluster
+# data_table_ID17$tadpole<-clust_tadpole_ID17@cluster
+# data_table_ID18$tadpole<-clust_tadpole_ID18@cluster
+# 
+# table(data_table_ID9$tadpole)
+# table(data_table_ID11$tadpole)
+# table(data_table_ID17$tadpole)
+# table(data_table_ID18$tadpole)
+
+#####
+
+
+          
+```
+
+
+prediction
+```{r}
+
+set.seed(123)
+
+os<-"windows"
+
+if(os=="windows"){
+save_folder<-"C:/Users/hza0020/OneDrive - Auburn University/IOT/data"}
+if(os=="mac"){
+save_folder<-"/Users/hamid/OneDrive - Auburn University/IOT/data"}
+
+#this package is for importing excel files into R
+library(rio)
+
+
+data_pred11<-import(paste(save_folder,"/predict_clust_ID11.csv",sep=""))
+names(data_pred11)<-c( "ID","ID3", "ID4" ,"ID5" ,"ID6","TARGET") 
+data_pred11$TARGET<-data_pred11$TARGET-1
+
+regular_pred11<-leave_out(data<-data_pred11,TARGET<-"TARGET",vars<-c( "ID3", "ID4" ,"ID5" ,"ID6") ,ensembler<-"none",
+                 B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+  
+ensemble_svm11<-leave_out(regular_pred11$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+ensemble_log11<-leave_out(regular_pred11$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+ensemble_rf11<-leave_out(regular_pred11$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+ensemble_nnet11<-leave_out(regular_pred11$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")  
+
+
+
+
+data_pred13<-import(paste(save_folder,"/predict_clust_ID13.csv",sep=""))
+names(data_pred13)<-c( "ID","ID3", "ID4" ,"ID5" ,"ID6","TARGET") 
+data_pred13$TARGET<-data_pred13$TARGET-1
+
+regular_pred13<-leave_out(data<-data_pred13,TARGET<-"TARGET",vars<-c( "ID3", "ID4" ,"ID5" ,"ID6") ,ensembler<-"none",
+                          B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+ensemble_svm13<-leave_out(regular_pred13$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+ensemble_log13<-leave_out(regular_pred13$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+ensemble_rf13<-leave_out(regular_pred13$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+ensemble_nnet13<-leave_out(regular_pred13$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")     
+   
+
+  
+data_pred19<-import(paste(save_folder,"/predict_clust_ID19.csv",sep=""))
+names(data_pred19)<-c( "ID","ID3", "ID4" ,"ID5" ,"ID6","TARGET") 
+data_pred19$TARGET<-data_pred19$TARGET-1
+
+regular_pred19<-leave_out(data<-data_pred19,TARGET<-"TARGET",vars<-c( "ID3", "ID4" ,"ID5" ,"ID6") ,ensembler<-"none",
+                          B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+ensemble_svm19<-leave_out(regular_pred19$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+ensemble_log19<-leave_out(regular_pred19$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+ensemble_rf19<-leave_out(regular_pred19$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+ensemble_nnet19<-leave_out(regular_pred19$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")  
+
+
+ 
+
+data_pred20<-import(paste(save_folder,"/predict_clust_ID20.csv",sep=""))
+names(data_pred20)<-c( "ID","ID3", "ID4" ,"ID5" ,"ID6","TARGET") 
+data_pred20$TARGET<-data_pred20$TARGET-1
+
+regular_pred20<-leave_out(data<-data_pred20,TARGET<-"TARGET",vars<-c( "ID3", "ID4" ,"ID5" ,"ID6") ,ensembler<-"none",
+                          B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+ensemble_svm20<-leave_out(regular_pred20$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+ensemble_log20<-leave_out(regular_pred20$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+ensemble_rf20<-leave_out(regular_pred20$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+ensemble_nnet20<-leave_out(regular_pred20$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")
+
+
+#checking the performance of models through regular predictions and then through ensembling
+regular_pred11$performance
+regular_pred13$performance
+regular_pred19$performance
+regular_pred20$performance
+
+
+ensemble_rf11$performance
+ensemble_rf13$performance
+ensemble_rf19$performance
+ensemble_rf20$performance
+
+
+```
+
+
+
