@@ -1,0 +1,1409 @@
+---
+title: "An Objective Approach for Categorizing Staff Bassed on Their vulnerabulity to Fatigue"
+author:
+  - Ashish Gupta^[Aubrun University, [azg0074@auburn.edu](mailto:azg0074@auburn.edu)]
+  - Fadel M. Megahed^[Miami University, [fmegahed@miamioh.edu](mailto:fmegahed@miamioh.edu)]
+  - Lora A. Cavuoto^[University of Buffalo, [loracavu@buffalo.edu](mailto:loracavu@buffalo.edu)]
+  - Hamidreza Ahady Dolatsara^[Aubrun University, [hamid@auburn.edu](mailto:hamid@auburn.edu)]
+
+
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    code_folding: hide
+---
+
+  
+
+****
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+A major goal of this study is developing an objective measure for understanding perceived level of fatigue using IoT data. Therefore, it enables investigation of fatigue without interfering with routine tasks or interrupting the workers. Use of IoT devices for capturing activity data provides an objective measure for assessing injury risk or fatigue-levels of an employee. This could eventually lead to better assigning for job routines based on the individual performance. 
+
+****
+
+# Loading prerequisites: Data & Libraries
+
+In the following block, required ***R*** libraries are checked for existance and then installed if it's needed.
+
+
+```{r, load_libraries, message=FALSE, cache=TRUE, error=FALSE}
+
+rm(list = ls()) # clears global environment (functions and variables)
+graphics.off() # clears graphics
+if(!("pacman" %in% rownames(installed.packages()))){install.packages("pacman")}# pacman would be installed if it's not existed
+library(pacman) 
+p_load(caret, rio, dtwclust, graph, RBGL, arules, stringr, pROC, DT)
+ 
+```
+
+
+Object oriented programming is employed for this project. In this approach of programming, an empty object is created then in each step some attributes and data would be added to the object. Each step is basically a function that perform some processes over the object.Th following snippet is designed to define the functions.
+
+defining functions and loading the required libraries
+```{r, message=FALSE, cache=TRUE, error=FALSE}
+
+# a function for calculating RUS sample balancing
+seed_no<-123
+top_alg<-3
+RUS_func <- function(input_data){
+
+  Train_Two <- input_data[ which(as.character(input_data$TARGET)=="two"), ]
+  Train_One <- input_data[ which(as.character(input_data$TARGET)=="one"), ]
+  if(nrow(Train_Two)<=nrow(Train_One)){
+    sample_size<-nrow(Train_Two)
+    Train_One<-Train_One[sample(nrow(Train_One), sample_size), ]
+  }else{
+    sample_size<-nrow(Train_One)
+    Train_Two<-Train_Two[sample(nrow(Train_Two), sample_size), ]
+  }
+  input_data<-rbind(Train_One,Train_Two)
+  
+  return(input_data)
+}
+
+###########  
+# it exracts importance of features in a prediction
+model_imp_exc <- function(input_object,vars_org){
+  imp_model<-varImp(input_object)
+  imp_model<-as.data.frame(imp_model$importance)
+  imp_model$variables<-rownames(imp_model)
+  imp_model$importance<-as.numeric(imp_model[,1])
+  
+  model_imp<-matrix(0, ncol = 1, nrow = nrow(imp_model))
+  model_imp<-as.data.frame(model_imp)
+  
+  
+  model_imp$variables<-imp_model$variables
+  model_imp$importance<-imp_model$importance
+  model_imp$V1<-NULL 
+  
+  seeker<-model_imp
+  seeker$real_name<-NA
+  
+  seeked<-as.data.frame(vars_org[,1])
+  names(seeked)<-"variables"
+  
+  for (i in 1:nrow(seeker)){
+    for (j in 1:nrow(seeked)) {
+      if(grepl(seeked$variables[j],seeker$variables[i])){
+        if(str_count(seeker$variables[i],"_")==str_count(seeked$variables[j],"_")){
+          seeker$real_name[i]<-as.character(seeked$variables[j])}
+      }
+    }
+  }
+  # It's for the variables that created by us and are not in the original dataset
+  for (i in 1:nrow(seeker)){
+    if(is.na(seeker$real_name[i])){seeker$real_name[i]<-seeker$variables[i]}
+  }
+  str(seeker$importance)
+  seeker<-seeker[c("variables","importance")]
+
+  return(seeker) 
+}
+###########
+# it a minor function gets the output of model_imp_exc() function and change its format to a dataframe
+matrix_filler_2<-function(col_no,filling_matrix,filler_matrix,common_col){
+  common_col<-paste(common_col,"_",col_no,sep="")
+  
+  for(j in filler_matrix$variables){
+    filling_matrix[j,common_col]<-filler_matrix$importance[which(filler_matrix$variables==j)]
+  }
+     
+  return(filling_matrix) 
+}
+###########
+# a function for calculating accuracy of a prediction model (e.g. svm, logistics, ranfopm forrest,...)
+accuracy_cal<-function(actual,predicted){
+  counter<-0
+  for(i in 1:length(actual)){
+    if(actual[i]==predicted[i]){counter<-counter+1}
+  }
+  percent_accuracy<-round((counter/length(actual)),2)
+  return(percent_accuracy)
+}
+
+###########################################
+# this function gets the raw data and change its format to a suitable format for clustering
+# the inputs are the raw data , different start time (1st to 9th data points). min_all is the last data points that all of earlier data points are not NAs
+prepar<-function(data,start_t,min_all){
+  
+  for(i in 1:15){
+
+      data[["time_series"]][["table_ID11"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID11",(start_t:min_all)])
+      data[["time_series"]][["table_ID13"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID13",(start_t:min_all)])
+      data[["time_series"]][["table_ID19"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID19",(start_t:min_all)])
+      data[["time_series"]][["table_ID20"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID20",(start_t:min_all)])
+      data[["time_series"]][["table_ID7"]][[i]]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID7",(start_t:min_all)])
+  }  
+
+  # now, I make a table of observations for the variables
+  template<-matrix(0, ncol = 86, nrow = 15)
+  template<-as.data.frame(template)
+  template$V1<-c(1:15)
+  names(template)<-c("subjects",paste("ts",1:85,sep=""))
+  
+  data_table_ID11<-do.call(rbind.data.frame, data$time_series$table_ID11)
+    names(data_table_ID11)<-c(paste("ts",start_t:50,sep=""))
+    data_table_ID11$subjects<-rownames(data_table_ID11)
+  data_table_ID13<-do.call(rbind.data.frame, data$time_series$table_ID13)
+      names(data_table_ID13)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID13$subjects<-rownames(data_table_ID13)
+  data_table_ID19<-do.call(rbind.data.frame, data$time_series$table_ID19)
+      names(data_table_ID19)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID19$subjects<-rownames(data_table_ID19)
+  data_table_ID20<-do.call(rbind.data.frame, data$time_series$table_ID20)
+      names(data_table_ID20)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID20$subjects<-rownames(data_table_ID20)
+  data_table_ID7<-do.call(rbind.data.frame, data$time_series$table_ID7)
+      names(data_table_ID7)<-c(paste("ts",start_t:50,sep=""))
+      data_table_ID7$subjects<-rownames(data_table_ID7)
+  
+    data_table_ID3.4.5.6<-template[,1:2]
+  data_table_ID3.4.5.6$ts1<-NULL
+
+  # recording gender age weight height of subject which is same in all of time points
+
+  for(i in 1:15){
+    data_table_ID3.4.5.6[i,"ID3"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID3",1])
+    data_table_ID3.4.5.6[i,"ID4"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID4",1])
+    data_table_ID3.4.5.6[i,"ID5"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID5",1])
+    data_table_ID3.4.5.6[i,"ID6"]<-as.numeric(data[["subjects"]][[paste("subject",i,sep="")]]["ID6",1])
+      }
+
+  data$data_table_ID11<-data_table_ID11
+  data$data_table_ID13<-data_table_ID13
+  data$data_table_ID19<-data_table_ID19
+  data$data_table_ID20<-data_table_ID20  
+  data$data_table_ID7<-data_table_ID7
+  
+  data$data_table_ID3.4.5.6<-data_table_ID3.4.5.6
+
+  return(data)
+  
+}
+
+###########################################
+# a function for clustering time series. its inputs are data object (has time series of Borg and sensors), centroid and distance parameters for clustering
+clusterer<-function(data_obj,centr_par,dis_par){
+acf_fun <- function(dat, ...) {lapply(dat, function(x) as.numeric(acf(x, lag.max = 100L, plot = FALSE)$acf))}
+
+  for(i in c(7,11,13,19,20)){
+  assign(paste("clust_part_ID",i,sep="") ,tsclust(data_obj[["time_series"]][[paste("table_ID",i,sep="")]], k = 2L, 
+                                          distance = dis_par, centroid = centr_par, 
+                                          seed = seed_no, trace = TRUE,
+                                          control = partitional_control(pam.precompute = FALSE),
+                                          args = tsclust_args(dist = list(window.size = 2L)))
+                                          )
+
+  }
+#flipper input change
+temp11<-flipper(data_obj$data_table_ID11,clust_part_ID11@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"11",sep="_")]<-temp11
+
+temp13<-flipper(data_obj$data_table_ID13,clust_part_ID13@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"13",sep="_")]<-temp13
+
+temp19<-flipper(data_obj$data_table_ID19,clust_part_ID19@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"19",sep="_")]<-temp19
+
+temp20<-flipper(data_obj$data_table_ID20,clust_part_ID20@cluster,"high")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"20",sep="_")]<-temp20
+
+temp7<-flipper(data_obj$data_table_ID7,clust_part_ID7@cluster,"low")
+data_obj$data_table_ID3.4.5.6[paste(centr_par,dis_par,"7",sep="_")]<-temp7
+
+#it's for taking care of NAs
+if(is.na(table(temp11)[1])){clust11_freq_1<-0}else{clust11_freq_1<-table(temp11)[1]}
+if(is.na(table(temp11)[2])){clust11_freq_2<-0}else{clust11_freq_2<-table(temp11)[2]}
+
+if(is.na(table(temp13)[1])){clust13_freq_1<-0}else{clust13_freq_1<-table(temp13)[1]}
+if(is.na(table(temp13)[2])){clust13_freq_2<-0}else{clust13_freq_2<-table(temp13)[2]}
+
+if(is.na(table(temp19)[1])){clust19_freq_1<-0}else{clust19_freq_1<-table(temp19)[1]}
+if(is.na(table(temp19)[2])){clust19_freq_2<-0}else{clust19_freq_2<-table(temp19)[2]}
+
+if(is.na(table(temp20)[1])){clust20_freq_1<-0}else{clust20_freq_1<-table(temp19)[1]}
+if(is.na(table(temp20)[2])){clust20_freq_2<-0}else{clust20_freq_2<-table(temp19)[2]}
+
+if(is.na(table(temp7)[1])){clust7_freq_1<-0}else{clust7_freq_1<-table(temp7)[1]}
+if(is.na(table(temp7)[2])){clust7_freq_2<-0}else{clust7_freq_2<-table(temp7)[2]}
+
+
+clus11<-abs(clust11_freq_1-clust11_freq_2)
+clus13<-abs(clust13_freq_1-clust13_freq_2)
+clus19<-abs(clust19_freq_1-clust19_freq_2)
+clus20<-abs(clust20_freq_1-clust20_freq_2)
+clus7<-abs(clust7_freq_1-clust7_freq_2)
+
+
+max_cluss<-max(clus11,clus13,clus19,clus20,clus7)
+
+data_obj$max_cluss<-max_cluss
+
+return(data_obj)
+
+}
+##################
+# this is a sub function undert the clusterer() function. It basically take care of the definition of clusters' labels. In (Borg's rate, step_time_SD,step_distance_SD, and step_peak_jrk_average) higher values associated to higher fatigues' levels however in step_peak_jrk_average, the lower values is associated to higher fatigue. It just flips the step_peak_jrk_average value so for the flipped version cluster label of 1 means lower fatigue level, and 2 means higher level of fatigue which is same as other clusters' labels made by other variables
+ flipper<-function(data_series,data_clust,cluss_one){
+   
+   min_1<-0
+   min_2<-0
+   work_1<-sum(which(data_clust==1))
+   work_2<-sum(which(data_clust==2))
+   i<-1
+   
+   if(work_1*work_2>0){
+     for(i in which(data_clust==1)){
+       min_1<- min_1+mean(as.numeric(data_series[i,1:(ncol(data_series)-1)]))}
+     for(j in which(data_clust==2)){
+       min_2<- min_2+mean(as.numeric(data_series[j,1:(ncol(data_series)-1)]))}
+     
+     min_1<-min_1/length(which(data_clust==1))
+     min_2<-min_2/length(which(data_clust==2))
+   }
+   
+   
+   
+   if(cluss_one=="low" && min_1>min_2){
+     temp<-data_clust
+     temp[which(data_clust==1)]<-2
+     temp[which(data_clust==2)]<-1
+     data_clust<-temp
+   }
+   if(cluss_one=="high" && min_1<min_2){
+     temp<-data_clust
+     temp[which(data_clust==1)]<-2
+     temp[which(data_clust==2)]<-1
+     data_clust<-temp
+   }
+   return(data_clust)
+   
+ }
+############################################
+# it gets input from the clusterer() function and then find diffrences in the members of each clusters and then calculate overlap of sensor data with BOrg's rate in clustering
+compare_clus<-function(data_obj){
+
+resul_cluss<-as.data.frame(matrix(0, ncol = 3, nrow = 45))
+names(resul_cluss)<-c("dis_par","centr_par","cluss_diff")
+
+
+clust_ID7<-data_obj$data_table_ID3.4.5.6
+clust_ID11<-data_obj$data_table_ID3.4.5.6
+clust_ID13<-data_obj$data_table_ID3.4.5.6
+clust_ID19<-data_obj$data_table_ID3.4.5.6
+clust_ID20<-data_obj$data_table_ID3.4.5.6
+  
+
+row_counter<-0
+
+for(i in c("mean", "median", "shape", "dba", "pam")){
+  for(j in c("dtw","dtw2","dtw_basic","dtw_lb","lbk","lbi","sbd","gak","sdtw")){
+    row_counter<-row_counter+1
+    resul_cluss[row_counter,"dis_par"]<-j
+    resul_cluss[row_counter,"centr_par"]<-i
+    temp<-clusterer(data_obj,i,j)
+    resul_cluss[row_counter,"cluss_diff"]<-temp[["max_cluss"]]
+    clust_ID7[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]
+    clust_ID11[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]
+    clust_ID13[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]
+    clust_ID19[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]
+    clust_ID20[[paste(i,j,sep="_")]]<-temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]
+    
+    
+    perf_711<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_713<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_719<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_720<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]*temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_7<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,7,sep="_")]))
+    perf_11<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,11,sep="_")]))
+    perf_13<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,13,sep="_")]))
+    perf_19<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,19,sep="_")]))
+    perf_20<-as.data.frame(table(temp$data_table_ID3.4.5.[,paste(i,j,20,sep="_")]))
+    
+    
+      temp7<-length(abs(perf_7[which(perf_7$Var1==1),"Freq"]-perf_7[which(perf_7$Var1==2),"Freq"]))
+      if(temp7==0){temp7<-15}else{temp7<-abs(perf_7[which(perf_7$Var1==1),"Freq"]-perf_7[which(perf_7$Var1==2),"Freq"])}
+      resul_cluss$diff_7[row_counter]<-temp7
+      
+      temp11<-length(abs(perf_11[which(perf_11$Var1==1),"Freq"]-perf_11[which(perf_11$Var1==2),"Freq"]))
+      if(temp11==0){temp11<-15}else{temp11<-abs(perf_11[which(perf_11$Var1==1),"Freq"]-perf_11[which(perf_11$Var1==2),"Freq"])}
+      resul_cluss$diff_11[row_counter]<-temp11
+      
+      temp13<-length(abs(perf_13[which(perf_13$Var1==1),"Freq"]-perf_13[which(perf_13$Var1==2),"Freq"]))
+      if(temp13==0){temp13<-15}else{temp13<-abs(perf_13[which(perf_13$Var1==1),"Freq"]-perf_13[which(perf_13$Var1==2),"Freq"])}
+      resul_cluss$diff_13[row_counter]<-temp13
+      
+      temp19<-length(abs(perf_19[which(perf_19$Var1==1),"Freq"]-perf_19[which(perf_19$Var1==2),"Freq"]))
+      if(temp19==0){temp19<-15}else{temp19<-abs(perf_19[which(perf_19$Var1==1),"Freq"]-perf_19[which(perf_19$Var1==2),"Freq"])}
+      resul_cluss$diff_19[row_counter]<-temp19
+      
+      temp20<-length(abs(perf_20[which(perf_20$Var1==1),"Freq"]-perf_20[which(perf_20$Var1==2),"Freq"]))
+      if(temp20==0){temp20<-15}else{temp20<-abs(perf_20[which(perf_20$Var1==1),"Freq"]-perf_20[which(perf_20$Var1==2),"Freq"])}
+      resul_cluss$diff_20[row_counter]<-temp20
+
+    
+    # resul_cluss$over_711[row_counter]<-max((perf_711[which(perf_711$Var1==1),"Freq"]+perf_711[which(perf_711$Var1==4),"Freq"]),perf_711[which(perf_711$Var1==2),"Freq"])
+    # resul_cluss$over_713[row_counter]<-max((perf_713[which(perf_713$Var1==1),"Freq"]+perf_713[which(perf_713$Var1==4),"Freq"]),perf_713[which(perf_713$Var1==2),"Freq"])
+    # resul_cluss$over_719[row_counter]<-max((perf_719[which(perf_719$Var1==1),"Freq"]+perf_719[which(perf_719$Var1==4),"Freq"]),perf_719[which(perf_719$Var1==2),"Freq"])
+    # resul_cluss$over_720[row_counter]<-max((perf_720[which(perf_720$Var1==1),"Freq"]+perf_720[which(perf_720$Var1==4),"Freq"]),perf_720[which(perf_720$Var1==2),"Freq"])
+      
+    # I have to do it to find the overlap because 
+    if(length(perf_711[which(perf_711$Var1==1),"Freq"])==1){over_711_1<-perf_711[which(perf_711$Var1==1),"Freq"]}else{over_711_1<-0}
+    if(length(perf_713[which(perf_713$Var1==1),"Freq"])==1){over_713_1<-perf_713[which(perf_713$Var1==1),"Freq"]}else{over_713_1<-0} 
+    if(length(perf_719[which(perf_719$Var1==1),"Freq"])==1){over_719_1<-perf_719[which(perf_719$Var1==1),"Freq"]}else{over_719_1<-0}
+    if(length(perf_720[which(perf_720$Var1==1),"Freq"])==1){over_720_1<-perf_720[which(perf_720$Var1==1),"Freq"]}else{over_720_1<-0}  
+      
+    if(length(perf_711[which(perf_711$Var1==4),"Freq"])==1){over_711_4<-perf_711[which(perf_711$Var1==4),"Freq"]}else{over_711_4<-0}
+    if(length(perf_713[which(perf_713$Var1==4),"Freq"])==1){over_713_4<-perf_713[which(perf_713$Var1==4),"Freq"]}else{over_713_4<-0} 
+    if(length(perf_719[which(perf_719$Var1==4),"Freq"])==1){over_719_4<-perf_719[which(perf_719$Var1==4),"Freq"]}else{over_719_4<-0}
+    if(length(perf_720[which(perf_720$Var1==4),"Freq"])==1){over_720_4<-perf_720[which(perf_720$Var1==4),"Freq"]}else{over_720_4<-0} 
+    
+    resul_cluss$over_711[row_counter]<-(over_711_1+over_711_4)
+    resul_cluss$over_713[row_counter]<-(over_713_1+over_713_4)
+    resul_cluss$over_719[row_counter]<-(over_719_1+over_719_4)
+    resul_cluss$over_720[row_counter]<-(over_720_1+over_720_4)
+  }
+}
+
+data_obj$resul_cluss<-resul_cluss
+data_obj$clust_ID7<-clust_ID7
+data_obj$clust_ID11<-clust_ID11
+data_obj$clust_ID13<-clust_ID13
+data_obj$clust_ID19<-clust_ID19
+data_obj$clust_ID20<-clust_ID20
+
+
+
+return(data_obj)
+}
+##################
+
+# this function is forone-leave out prediction 
+  #data: data used in the prediction
+  #TARGET: target variable
+  #vars<- independent variables
+  #ensembler: super learning algorithm in ensembling approach
+  #B_alg: sample balancing algorithm (RUS,SMOTE,NONE)
+  #cntr_type:specifying "trainControl" in the caret package, for more information check inside of the "leave_out" function
+  #method_pred: specifying if it is a regular preduction or an ensemble one
+leave_out<-function(data,TARGET,vars,ensembler,B_alg,cntr_type,method_pred){
+  #next line is just for finding threshold of prediction
+  if(method_pred=="regular"){
+    data$TARGET01<-as.numeric(data$TARGET)
+    
+    data$TARGET<-as.factor(data$TARGET)
+    levels(data$TARGET)[1] <- "one"
+    levels(data$TARGET)[2] <- "two"
+    }
+  
+  data$TARGET<-as.factor(data$TARGET)
+  
+  n_rows<-nrow(data)
+  
+  library(caret)
+  # next library is for discretize function
+  library(arules)
+  # the following library is for loading strcount in variable importance function
+  library(stringr)
+  
+  # the following library is for ROC / area under the curve calculation
+  library(pROC)
+  
+  if(cntr_type=="simple"){
+    control_<- trainControl(method = "none",  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE)}
+  if(cntr_type=="simplegbm"){
+    control_<- trainControl(method = "cv", number = 1, savePredictions = TRUE,
+                            verboseIter = FALSE,classProbs = TRUE, summaryFunction = twoClassSummary)
+  }
+  
+  if(cntr_type=="simple_roc"){
+    control_<- trainControl(method = "none",  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  if(cntr_type=="repeatedcv_roc"){
+    control_<- trainControl(method="repeatedcv", number=2, repeats=5,  savePredictions = TRUE,
+                            verboseIter = FALSE,returnResamp = "all",classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  if(cntr_type=="cv_roc"){
+    control_<- trainControl(method = "cv", number = 2, savePredictions = TRUE,
+                            verboseIter = FALSE,classProbs = TRUE, summaryFunction = twoClassSummary)}
+  
+  
+  resul_prob<-matrix(0, ncol = 8, nrow = n_rows)
+  resul_prob<-as.data.frame(resul_prob)
+  names(resul_prob) <- c("ID","TARGET","TARGET01","log","svm","rf","nnet","tan")
+  resul_prob$TARGET<-data$TARGET
+  resul_prob$ID<-rownames(resul_prob)
+  resul_prob$TARGET01<-data$TARGET01
+  
+  resul_raw<-resul_prob
+  
+
+  resul_svm_imp<-matrix(0, ncol = n_rows, nrow = length(vars))
+  resul_svm_imp<-as.data.frame(resul_svm_imp)
+  names(resul_svm_imp) <- paste("subject_", 1:n_rows, sep = "")
+  rownames(resul_svm_imp)<-vars
+  
+  resul_rf_imp<-resul_svm_imp
+  resul_nnet_imp<-resul_svm_imp
+  resul_tan_imp<-resul_svm_imp
+  resul_log_imp<-resul_svm_imp
+  
+  tan_vars<-vars
+  
+  
+  formula_format<-paste("TARGET ~ ",paste(vars, collapse="+"),sep = "")
+  formula<-as.formula(formula_format)
+  
+  VarsData_Phase<-as.data.frame(vars)
+  names(VarsData_Phase)<-"variables"
+  
+  
+  major_data<-list()
+  all_models<-list()
+  
+  # Recording train and test folds
+  major_data$data_folded<-data
+  #i<-2
+
+  for ( i in 1: n_rows){
+    test_data<-data[data$ID == i,]
+    train_data<-data[data$ID != i,]
+
+    tt<-as.data.frame(table(train_data$TARGET))
+    #table(train_data$TARGET)
+    common<-tt$Freq[1]
+    rare<-tt$Freq[2]
+    k<-1
+    if(common<rare){
+      temp_<-common
+      common<-rare
+      rare<-temp_
+    }
+    if(B_alg=="RUS"){
+      train_data<-RUS_func(train_data)
+      #table(train_data$TARGET)
+      # Recording the row id of RUS data
+      # RUS_fold<-paste(c("RUS_id_fold_",i),collapse = "")
+      # major_data[[RUS_fold]]<-train_data$id
+    }
+
+    if(B_alg=="SMOTE"){
+      train_data$TARGET<-as.factor(train_data$TARGET)
+      H_por_low<-1
+      H_por_high<-1
+      H_por_low<-(1/H_por_low)
+      H_por_high<-H_por_high*100
+      perc_over<-100*(common-rare)/(rare*H_por_low)*k
+      perc_under<-100*(1/perc_over)*common
+      table(train_data$TARGET)
+      row_no<-nrow(train_data)
+      smoted_data<-DMwR::SMOTE(TARGET ~ ., train_data, perc.over = perc_over,perc.under = (((perc_over/100)+1)/(perc_over/100))*H_por_high)
+      train_data<-smoted_data[complete.cases(smoted_data), ]
+    }
+
+    #===================
+
+
+    if(method_pred=="regular"){
+      mod_log <-caret::train(formula,  data=train_data, method="glm", family="binomial",
+                             trControl = control_, tuneLength = 5)
+
+      mod_rf<-caret::train(formula,  data=train_data, method="rf",
+                           trControl = control_, tuneGrid=expand.grid(mtry = ncol(train_data)-4),
+                           tuneLength = 5)
+
+      svm_cost<-.5
+      svm_sigma<-.0001
+
+
+      
+      if(class(try(
+      
+      mod_svm<-caret::train(formula,  data=train_data, method="svmRadial", family="binomial",
+                            trControl = control_,  tuneGrid=expand.grid(C=svm_cost, sigma=svm_sigma),
+                            tuneLength = 5)
+      ))=="try-error"){
+      mod_svm<-caret::train(formula,  data=train_data, method="svmLinear2", family="binomial",
+                            trControl = control_,  tuneGrid=expand.grid(cost=svm_cost),
+                            tuneLength = 5)
+      }
+
+      mod_nnet<-caret::train(formula,  data=train_data, method="nnet", family="binomial",
+                             trControl = control_,  tuneGrid=expand.grid(size=5, decay=0.1), MaxNWts=20000,
+                             tuneLength = 5)
+      ##===making data ready for TAN
+      # disceretizing train and test
+
+      data_tan_train<-train_data
+      y_tr<-data_tan_train$TARGET
+      data_tan_train$TARGET<-NULL
+      data_tan_train$folds<-NULL
+      data_tan_train$type<-"tr"
+
+      data_tan_test<-test_data
+      y_ts<-data_tan_test$TARGET
+      data_tan_test$TARGET<-NULL
+      data_tan_test$folds<-NULL
+      data_tan_test$type<-"ts"
+      data_tan<-rbind(data_tan_train,data_tan_test)
+
+
+
+      for(j in 1:(ncol(data_tan)-1)){
+        if(is.numeric(data_tan_train[,j])){if(is.numeric(data_tan[,j])){
+
+          tester<-as.data.frame(data_tan[,j])
+          if(tester[1,1]!=tester[nrow(data_tan),1]){
+            data_tan[,j]<-discretize(data_tan[,j],method="interval",categories = floor(log(nrow(data_tan))))}else{
+              data_tan[,j]<-discretize(data_tan[,j],method="interval",categories = 1)
+            }
+        }
+        }
+      }
+
+      data_tan_train<-data_tan[which(data_tan$type=="tr"),]
+      data_tan_test<-data_tan[which(data_tan$type=="ts"),]
+      data_tan_train$type<-NULL
+      data_tan_test$type<-NULL
+
+      data_tan_train<-data_tan_train[, which(names(data_tan_train) %in% tan_vars)]
+      mod_tan <- caret::train(data_tan_train, y_tr, method="tan",
+                              trControl = control_, tuneGrid = expand.grid(score= "aic", smooth=0.5),
+                              tuneLength = 5)
+
+
+      {
+        if(class(try(varImp(mod_svm),silent = TRUE))!="try-error"){
+          resul_svm_imp<-matrix_filler_2(i,resul_svm_imp,model_imp_exc(mod_svm,VarsData_Phase),"subject")}
+        resul_raw[i,"svm"]<-as.character(predict(mod_svm, newdata=test_data, type="raw"))
+        resul_prob[i,"svm"]<-predict(mod_svm, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_log),silent = TRUE))!="try-error"){
+          resul_log_imp<-matrix_filler_2(i,resul_log_imp,model_imp_exc(mod_log,VarsData_Phase),"subject")}
+        resul_raw[i,"log"]<-as.character(predict(mod_log, newdata=test_data, type="raw"))
+        resul_prob[i,"log"]<-predict(mod_log, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_nnet),silent = TRUE))!="try-error"){
+          resul_nnet_imp<-matrix_filler_2(i,resul_nnet_imp,model_imp_exc(mod_nnet,VarsData_Phase),"subject")}
+        resul_raw[i,"nnet"]<-as.character(predict(mod_nnet, newdata=test_data, type="raw"))
+        resul_prob[i,"nnet"]<-predict(mod_nnet, newdata=test_data, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_tan),silent = TRUE))!="try-error"){
+          resul_tan_imp<-matrix_filler_2(i,resul_tan_imp,model_imp_exc(mod_tan,VarsData_Phase),"subject")}
+        resul_raw[i,"tan"]<-as.character(predict(mod_tan, newdata=data_tan_test, type="raw"))
+        resul_prob[i,"tan"]<-predict(mod_tan, newdata=data_tan_test, type="prob")[2]
+      }
+
+      {
+        if(class(try(varImp(mod_rf),silent = TRUE))!="try-error"){
+          resul_rf_imp<-matrix_filler_2(i,resul_rf_imp,model_imp_exc(mod_rf,VarsData_Phase),"subject")}
+        resul_raw[i,"rf"]<-as.character(predict(mod_rf, newdata=test_data, type="raw"))
+        resul_prob[i,"rf"]<-predict(mod_rf, newdata=test_data, type="prob")[2]
+      }
+
+
+    }
+
+    if(ensembler=="svm_ens" & method_pred=="ensemble"){
+      svm_cost<-.5
+      svm_sigma<-.0001
+      ens<-caret::train(formula,  data=train_data, method="svmRadial", family="binomial",
+                        trControl = control_,  tuneGrid=expand.grid(C=svm_cost, sigma=svm_sigma),
+                        tuneLength = 5)
+    }
+
+    if(ensembler=="log_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="glm", family="binomial",
+                        trControl = control_, tuneLength = 5)
+    }
+
+    if(ensembler=="nnet_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="nnet", family="binomial",
+                        trControl = control_,  tuneGrid=expand.grid(size=5, decay=0.1), MaxNWts=20000,
+                        tuneLength = 5)
+    }
+
+    if(ensembler=="rf_ens" & method_pred=="ensemble"){
+      ens<-caret::train(formula,  data=train_data, method="rf",
+                        trControl = control_, tuneGrid=expand.grid(mtry = ncol(train_data)-4),
+                        tuneLength = 5)
+    }
+
+    if(method_pred=="ensemble"){
+      resul_raw[i,paste(method_pred,ensembler,sep="_")]<-as.character(predict(ens, newdata=test_data, type="raw"))
+      resul_prob[i,paste(method_pred,ensembler,sep="_")]<-predict(ens, newdata=test_data, type="prob")[2]
+    }
+
+
+  }
+  #end of predicting part
+
+  performance<-matrix(0, ncol = 4, nrow = 6)
+  performance<-as.data.frame(performance)
+
+  row.names(performance) <- c("log","rf","nnet","svm","tan",paste(method_pred,ensembler,sep="_"))
+  names(performance)<-c("accuracy","sensitivity","specificity","auc")
+  
+  if(method_pred=="ensemble"){
+    performance<-performance[6,]
+  }
+  
+  if(method_pred=="regular"){
+    performance<-performance[1:5,]
+  }
+
+  if(method_pred=="regular"){
+    performance["log","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$log)
+    performance["rf","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$rf)
+    performance["nnet","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$nnet)
+    performance["svm","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$svm)
+    performance["tan","accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw$tan)
+
+    performance["log","sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw$log),resul_raw$TARGET),2)
+    performance["rf","sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw$rf),resul_raw$TARGET),2)
+    performance["nnet","sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw$nnet),resul_raw$TARGET),2)
+    performance["svm","sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw$svm),resul_raw$TARGET),2)
+    performance["tan","sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw$tan),resul_raw$TARGET),2)
+
+    performance["log","specificity"]<-round(caret:: specificity(as.factor(resul_raw$log),resul_raw$TARGET),2)
+    performance["rf","specificity"]<-round(caret:: specificity(as.factor(resul_raw$rf),resul_raw$TARGET),2)
+    performance["nnet","specificity"]<-round(caret:: specificity(as.factor(resul_raw$nnet),resul_raw$TARGET),2)
+    performance["svm","specificity"]<-round(caret:: specificity(as.factor(resul_raw$svm),resul_raw$TARGET),2)
+    performance["tan","specificity"]<-round(caret:: specificity(as.factor(resul_raw$tan),resul_raw$TARGET),2)
+
+    performance["log","auc"]<- round(as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$log))),2)
+    performance["rf","auc"]<- round(as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$rf))),2)
+    performance["nnet","auc"]<-round(as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$nnet))),2)
+    performance["svm","auc"]<- round(as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$svm))),2)
+    performance["tan","auc"]<- round(as.numeric(pROC::auc(roc(resul_raw$TARGET, resul_prob$tan))),2)}
+
+  if(method_pred=="ensemble"){
+    performance[paste(method_pred,ensembler,sep="_"),"accuracy"]<-accuracy_cal(resul_raw$TARGET,resul_raw[,paste(method_pred,ensembler,sep="_")])
+    performance[paste(method_pred,ensembler,sep="_"),"sensitivity"]<-round(caret:: sensitivity(as.factor(resul_raw[,paste(method_pred,ensembler,sep="_")]),resul_raw$TARGET),2)
+    performance[paste(method_pred,ensembler,sep="_"),"specificity"]<-round(caret:: specificity(as.factor(resul_raw[,paste(method_pred,ensembler,sep="_")]),resul_raw$TARGET),2)
+    performance[paste(method_pred,ensembler,sep="_"),"auc"]<-round(as.numeric(pROC::auc(roc(resul_raw$TARGET,resul_prob[,paste(method_pred,ensembler,sep="_")]))),2)
+  }
+
+  results<-list()
+  results$performance<-performance
+  results$resul_prob<-resul_prob
+  results$resul_raw<-resul_raw
+  
+  if(method_pred=="regular"){
+  results$resul_svm_imp<-resul_svm_imp
+  results$resul_tan_imp<-resul_tan_imp
+  results$resul_rf_imp<-resul_rf_imp
+  results$resul_log_imp<-resul_log_imp
+  results$resul_nnet_imp<-resul_nnet_imp}
+  
+  if(method_pred=="ensemble"){
+    results$resul_prob<-results$resul_prob[c("ID","TARGET","TARGET01",paste(method_pred,ensembler,sep="_"))]
+    results$resul_raw<-results$resul_raw[c("ID","TARGET","TARGET01",paste(method_pred,ensembler,sep="_"))]
+  }
+  
+
+  
+  return(results)
+}
+##################
+
+```
+
+
+## changing the raw format to time series data
+In this project, the data and the codes are apublically available.In the next snippet, the raw data is downloaded [GitHub repository](https://github.com/hamidahady/IOT/tree/master/Data/Raw).
+First step is data preparation, Five different variables (Borgs rate, and four sensor data) is recorded every 2 minutes over the task  duration in a time series format. Total task time is 167 minutes with 15 subjects employed for this study. After removing the missing time points, a time series of 50 data points  is considered for analysis. The main object is ***data_object***  The following snippet, downloads the data from github then just returns complete times series withinh ***time_series*** sub object. 
+
+```{r , message=FALSE, cache=TRUE, error=FALSE}
+# os<-"mac"
+# os<-"OS SERVER"
+os<-"windows"
+# os<-"mac"
+if(os=="windows"){
+save_folder<-"C:/Users/hza0020/OneDrive - Auburn University/IOT/data"}
+if(os=="mac"){
+save_folder<-"/Users/hamid/OneDrive - Auburn University/IOT/data"}
+
+#importing the data of subject and merge into a list variable
+subjects<-list()
+data_obj<-list()
+for(i in 1:15){
+  temp_table<-read.csv(paste("https://raw.githubusercontent.com/hamidahady/IOT/master/Data/Raw", "/Subject%20",i,".csv",sep=""))[,2:86]
+  rownames(temp_table)<-c("ID2","ID3","ID4","ID5","ID6","ID7","ID8","ID9","ID10","ID11","ID12","ID13","ID14","ID15","ID16",
+            "ID17","ID18","ID19","ID20","ID21","ID22","ID23","ID24","ID25","ID26","ID27","ID28")
+  temp_table[temp_table == "#N/A"] <- NA
+  subjects[[paste("subject",i,sep = "")]]<-temp_table
+  
+}
+data_obj$subjects<-subjects
+  
+  table_ID11<-list()
+  table_ID13<-list()
+  table_ID19<-list()
+  table_ID20<-list()
+  table_ID7<-list()
+  
+  event_length1<-ncol(data_obj$subjects$subject1)
+  event_length2<-ncol(data_obj$subjects$subject1)
+  event_length3<-ncol(data_obj$subjects$subject1)
+  event_length4<-ncol(data_obj$subjects$subject1)
+  event_length5<-ncol(data_obj$subjects$subject1)
+
+  for(i in 1:15){
+        table_ID11[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID11",])
+        if(sum(complete.cases(table_ID11[[i]]))<event_length1){event_length1<-sum(complete.cases(table_ID11[[i]]))}
+
+        table_ID13[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID13",])
+        if(sum(complete.cases(table_ID13[[i]]))<event_length2){event_length2<-sum(complete.cases(table_ID13[[i]]))}
+
+        table_ID19[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID19",])
+        if(sum(complete.cases(table_ID19[[i]]))<event_length3){event_length3<-sum(complete.cases(table_ID19[[i]]))}
+
+        table_ID20[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID20",])
+        if(sum(complete.cases(table_ID20[[i]]))<event_length4){event_length4<-sum(complete.cases(table_ID20[[i]]))}
+
+        table_ID7[[i]]<-as.numeric(data_obj[["subjects"]][[paste("subject",i,sep="")]]["ID7",])
+        if(sum(complete.cases(table_ID7[[i]]))<event_length5){event_length5<-sum(complete.cases(table_ID7[[i]]))}
+  }
+  
+  min_all<-min(event_length1,event_length2,event_length3,event_length4,event_length5)
+  start_t<-4
+  
+  time_series<-list()
+  for(i in c(7,11,13,19,20)){
+    time_series[[paste("table_ID",i,sep="")]]<-eval(parse(text=paste("table_ID",i,sep="")))
+  }
+  data_obj$time_series<-time_series
+# here I just get rid of extra elements
+  rm(list = c("subjects","time_series","table_ID11","table_ID13","table_ID19","table_ID20","table_ID7","event_length1","event_length2",
+              "event_length3","event_length4","event_length5","temp_table"))
+```
+
+
+
+****
+# Binomial Clustering
+
+The subjects reported the lowest Borg's value during the first nine time epochs, which represents 18% (first 9 data points) of the overall experiment time. Borg Values remained mostly constant during this time frame. Therefore we are skeptical if we do data analysis from different data point may lead to different results. for clustering starting in different data point 5 different centroid measures ("mean", "median", "shape", "dba", "pam") and 9 different distance measures are calculated ("dtw", "dtw2", "dtw_basic", "dtw_lb", "lbk", "lbi", "sbd", "gak", "sdtw"). Then "9x5x9=225" different situations are developed. ***prepar*** function makes the cleaned data ready for clustering. ***compare_clus*** perform clustering and then compares overlap of clusters created by Borg's data with the 4 sensors data. the results of comparison are recorded as a table for each starting time points. These tables are: ***t1_perf, t2_perf, t3_perf, t4_perf, t5_perf, t6_perf, t7_perf, t8_perf, t9_perf***
+
+
+```{r , message=FALSE, cache=FALSE, error=FALSE, results="hide", warning=FALSE}
+#partitional clustering
+# centroid should be one of "mean", "median", "shape", "dba", "pam"
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-1
+data<-prepar(data_obj,start_t,min_all)
+obj_1<-compare_clus(data)
+data_obj$t1_perf<-obj_1[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-2
+data<-prepar(data_obj,start_t,min_all)
+obj_2<-compare_clus(data)
+data_obj$t2_perf<-obj_2[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-3
+data<-prepar(data_obj,start_t,min_all)
+obj_3<-compare_clus(data)
+data_obj$t3_perf<-obj_3[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-4
+data<-prepar(data_obj,start_t,min_all)
+obj_4<-compare_clus(data)
+data_obj$t4_perf<-obj_4[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-5
+data<-prepar(data_obj,start_t,min_all)
+obj_5<-compare_clus(data)
+data_obj$t5_perf<-obj_5[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-6
+data<-prepar(data_obj,start_t,min_all)
+obj_6<-compare_clus(data)
+data_obj$t6_perf<-obj_6[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-7
+data<-prepar(data_obj,start_t,min_all)
+obj_7<-compare_clus(data)
+data_obj$t7_perf<-obj_7[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-8
+data<-prepar(data_obj,start_t,min_all)
+obj_8<-compare_clus(data)
+data_obj$t8_perf<-obj_8[["resul_cluss"]]
+rm(list=c("data"))
+
+set.seed(seed_no)
+#set.seed(101)
+start_t<-9
+data<-prepar(data_obj,start_t,min_all)
+obj_9<-compare_clus(data)
+data_obj$t9_perf<-obj_9[["resul_cluss"]]
+rm(list=c("data"))
+
+
+
+
+
+#distance types:
+# "dtw": DTW, optionally with a Sakoe-Chiba/Slanted-band constraint. Done with dtw::dtw().
+# "dtw2": DTW with L2 norm and optionally a Sakoe-Chiba/Slanted-band constraint. See dtw2().
+# "dtw_basic": A custom version of DTW with less functionality, but faster. See dtw_basic().
+# "dtw_lb": DTW with L1 or L2 norm and optionally a Sakoe-Chiba constraint. Some computations
+# are avoided by first estimating the distance matrix with Lemire's lower bound and then
+# iteratively refining with DTW. See dtw_lb(). Not suitable for pam.precompute = TRUE nor
+# hierarchical clustering.
+# "lbk": Keogh's lower bound for DTW with either L1 or L2 norm for the Sakoe-Chiba constraint. See lb_keogh().
+# "lbi": Lemire's lower bound for DTW with either L1 or L2 norm for the Sakoe-Chiba constraint. See lb_improved().
+# "sbd": Shape-based distance. See SBD().
+# "gak": Global alignment kernels. See GAK().
+# "sdtw": Soft-DTW. See sdtw().
+
+#tadpole did not merge so I disregarded, here is the code:
+
+# for(i in c(9,11,17,18)){
+# assign(paste("clust_tadpole_ID",i,sep="") ,tsclust(eval(parse(text= paste("table_ID",i,sep=""))), type = "tadpole", k = 2L,
+#                                             trace = TRUE,
+#   control = tadpole_control(dc = 55, window.size = 15L)))}
+# data_table_ID9$tadpole<-clust_tadpole_ID9@cluster
+# data_table_ID11$tadpole<-clust_tadpole_ID11@cluster
+# data_table_ID17$tadpole<-clust_tadpole_ID17@cluster
+# data_table_ID18$tadpole<-clust_tadpole_ID18@cluster
+# 
+# table(data_table_ID9$tadpole)
+# table(data_table_ID11$tadpole)
+# table(data_table_ID17$tadpole)
+# table(data_table_ID18$tadpole)
+
+#####
+
+
+          
+```
+
+Each table has the following columns: ***"dis_par"	"centr_par"	"cluss_diff"	"diff_7"	"diff_11"	"diff_13"	"diff_19"	"diff_20"	"over_711"	"over_713"	"over_719"	"over_720"***
+
+**dis_par: **distance parameter used in the clustering <br />
+**centr_par: **centroid parameter used in the clustering <br />
+**cluss_diff:**	differences between members of the binomial clusters<br />
+**diff_7:	**given the parameters (distance, and centroid) what's the differences between members of the binomial clusters over Borg's Rate<br />
+**diff_11: **given the parameters (distance, and centroid) what's the differences between members of the binomial clusters over step_time_SD<br />
+**diff_13: **given the parameters (distance, and centroid) what's the differences between members of the binomial clusters over step_distance_SD<br />
+**diff_19: **given the parameters (distance, and centroid) what's the differences between members of the binomial clusters over step_peak_jrk_average<br />
+**diff_20: **given the parameters (distance, and centroid) what's the differences between members of the binomial clusters over overall_average_angle_back_bent <br />
+**over_711: **given the parameters (distance, and centroid) what's the amount of overlap between Borg's Rate and step_time_SD <br />
+**over_713: **given the parameters (distance, and centroid) what's the amount of overlap between Borg's Rate and step_distance_SD <br />
+**over_719: **given the parameters (distance, and centroid) what's the amount of overlap between Borg's Rate and step_peak_jrk_average <br />
+**over_720:** given the parameters (distance, and centroid) what's the amount of overlap between Borg's Rate and overall_average_angle_back_bent <br />
+
+****
+## Results of Binomial Clustering
+<br />
+<br />
+**the "t1_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t1_perf)
+```
+<br />
+<br />
+<br />
+**the "t2_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t2_perf)
+```
+<br />
+<br />
+<br />
+**the "t3_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t3_perf)
+```
+<br />
+<br />
+<br />
+**the "t4_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t4_perf)
+```
+<br />
+<br />
+<br />
+**the "t5_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t5_perf)
+```
+<br />
+<br />
+<br />
+**the "t6_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t6_perf)
+```
+<br />
+<br />
+<br />
+**the "t7_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t7_perf) 
+```
+<br />
+<br />
+<br />
+**the "t8_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t8_perf)
+```
+<br />
+<br />
+<br />
+**the "t9_perf" table **
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(data_obj$t9_perf)
+```
+****
+
+The below mentioned table demonstrates how that clustering with sensor data could yield high overlap with Borg's value with low variability. Also, there is no evidence if starting from different starting time stamp might yield a higher accordance with the actual fatigue "Borg's value". 
+
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+# here I calculate mean and average of overlap between sensor data and borg's rate in binomial clustering
+
+
+
+avg_table<-matrix(0, ncol = 11, nrow = 4)
+avg_table<-as.data.frame(avg_table)
+colnames(avg_table)<-c("time","1","2","3","4","5","6","7","8","9","average")
+avg_table$time<-c("time standard deviation","distance standard deviation","peak jerk mean","angle back bent mean")
+std_table<-avg_table
+
+
+
+
+vector<-c("t1_perf", "t2_perf", "t3_perf", "t4_perf", "t5_perf", "t6_perf", "t7_perf", "t8_perf", "t9_perf")
+
+for(i in 1:9){
+
+  avg_table[1,i+1]<-round(mean(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_711",sep=""))))),"over_711"],top_alg))/15,2)
+  avg_table[2,i+1]<-round(mean(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_713",sep=""))))),"over_713"],top_alg))/15,2)
+  avg_table[3,i+1]<-round(mean(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_719",sep=""))))),"over_719"],top_alg))/15,2)
+  avg_table[4,i+1]<-round(mean(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_720",sep=""))))),"over_720"],top_alg))/15,2)
+  
+  std_table[1,i+1]<-round(sqrt((top_alg-1)/top_alg)*sd(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_711",sep=""))))),"over_711"],top_alg)/15),2)
+  std_table[2,i+1]<-round(sqrt((top_alg-1)/top_alg)*sd(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_713",sep=""))))),"over_713"],top_alg)/15),2)
+  std_table[3,i+1]<-round(sqrt((top_alg-1)/top_alg)*sd(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_719",sep=""))))),"over_719"],top_alg)/15),2)
+  std_table[4,i+1]<-round(sqrt((top_alg-1)/top_alg)*sd(tail(data_obj[[vector[i]]][order(eval(parse(text=paste(paste("data_obj$",vector[i],"$over_720",sep=""))))),"over_720"],top_alg)/15),2)    
+  
+}
+
+avg_table$average[1]<-round(mean(as.numeric(avg_table[1,2:10])),2)
+avg_table$average[2]<-round(mean(as.numeric(avg_table[2,2:10])),2)
+avg_table$average[3]<-round(mean(as.numeric(avg_table[3,2:10])),2)
+avg_table$average[4]<-round(mean(as.numeric(avg_table[4,2:10])),2)
+
+std_table$average[1]<-round(mean(as.numeric(std_table[1,2:10])),2)
+std_table$average[2]<-round(mean(as.numeric(std_table[2,2:10])),2)
+std_table$average[3]<-round(mean(as.numeric(std_table[3,2:10])),2)
+std_table$average[4]<-round(mean(as.numeric(std_table[4,2:10])),2)
+```
+<br />
+<br />
+<br />
+*the next table shows overlap of different sensor data (candidate variable) with Borg's rate when we use these data to cluster staff based on their vulnurability to fatigue. Mean of the top `r  top_alg` scenarios in each time stamp is chosen  *
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(avg_table)
+```
+<br />
+<br />
+<br />
+*the above table is demonstrated below  *
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+data<-avg_table[,2:10]
+Y_label<-"overlap proportion"
+X_label<-"starting time points"
+
+  clusters_data_clus1<-data[1,]
+  clusters_data_clus2<-data[2,]
+  clusters_data_clus3<-data[3,]
+  clusters_data_clus4<-data[4,]
+  
+  clusters_data<-rbind(clusters_data_clus1,clusters_data_clus2,clusters_data_clus3,clusters_data_clus4)
+  
+  rownames(clusters_data)<-c("time standard deviation","distance standard deviation","peak jerk mean","angle back bent mean")
+  miny<-min(clusters_data)
+  maxy<-max(clusters_data)*1.2
+  
+  counter_years<-length(colnames(clusters_data))
+  
+  # mtext(side = 1, text = X_label, line = 2,cex=1.2)
+  # mtext(side = 2, text = Y_label, line = 3,cex=1.2)
+  
+  par(mar = c(5,5,2,5),cex.lab=1.6)
+  plot(as.numeric(clusters_data[1,]),xaxt="n", type="o", pch=4,col="black",ylim=c(miny,maxy),
+      ann = FALSE, cex=1.2,cex.axis=1.1,lty=1,lwd = 1)
+  line_dist<-4
+  #next line is for tilted labels but for 2002-2016 I may deactive it
+  
+  axis(1,at=1:counter_years,labels=colnames(clusters_data),cex.axis=1.1,las=1)
+  par(new = T)
+  plot(as.numeric(clusters_data[2,]),xaxt="n", type="o", pch=1,col="black",ylim=c(miny,maxy),
+       ann = FALSE, cex=1.2,cex.axis=1.1,lty=1,lwd = 1)
+  par(new = T)
+  plot(as.numeric(clusters_data[3,]),xaxt="n", type="o", pch=0,col="black",ylim=c(miny,maxy),
+       ann = FALSE, cex=1.2,cex.axis=1.1,lty=1,lwd = 1)
+  par(new = T)
+  plot(as.numeric(clusters_data[4,]),xaxt="n", type="o", pch=2,col="black",ylim=c(miny,maxy),
+       ann = FALSE, cex=1.2,cex.axis=1.1,lty=1,lwd = 1)
+  
+  mtext(side = 1, text = X_label, line = 2.5,cex=1.2)
+  mtext(side = 2, text = Y_label, line = 3,cex=1.2)
+  # axis(side = 4)
+  # mtext(side = 4, line = 3, "Cluster 2")
+  legend("topleft",
+         legend=c("time standard deviation","distance standard deviation","peak jerk mean","angle back bent mean"),
+                 lty=c(1,1,1,1), bty = "n",pch=c(4,1,0,2), col=c("black","black","black","black"),cex=1)
+  
+
+####################
+```
+<br />
+<br />
+<br />
+*the next table shows variance of the top `r  top_alg` scenarios *
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+DT::datatable(std_table)
+```
+****
+# Predicting Clusters' labels
+Four well known machine learning algorithms of SVM, LR, NNET, and TAN are utilized to predict clusters' label. For improving the prediction performance, the outcome of the models is fed into RF model using the stacking approach. In this study, there are 15 folds which each fold has 1 subject. Models are trained using 14 folds and then tested over the left out fold. This process repeated until all the subjects are predicted as the test fold.
+
+![Prediction Methodology](https://raw.githubusercontent.com/hamidahady/IOT/master/Data/methodology.JPG)
+
+``````{r , message=FALSE, cache=FALSE, error=FALSE, results="hide", warning=FALSE}
+
+# in this section, I utilizes the top clustering methods (the one who had highest overlap between sensor data and borg) then use them for voting the cluster labels
+
+
+  over_711_dis_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_711),"dis_par"],top_alg)
+  over_711_centr_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_711),"centr_par"],top_alg)
+  
+  over_713_dis_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_713),"dis_par"],top_alg)
+  over_713_centr_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_713),"centr_par"],top_alg)
+ 
+  over_719_dis_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_719),"dis_par"],top_alg)
+  over_719_centr_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_719),"centr_par"],top_alg)
+  
+  over_720_dis_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_720),"dis_par"],top_alg)
+  over_720_centr_par_top<-tail(data_obj[["t1_perf"]][order(data_obj$t1_perf$over_720),"centr_par"],top_alg)
+  
+  
+  over_711_params_top<-paste(over_711_centr_par_top,"_",over_711_dis_par_top,sep="")
+  over_713_params_top<-paste(over_713_centr_par_top,"_",over_713_dis_par_top,sep="")
+  over_719_params_top<-paste(over_719_centr_par_top,"_",over_719_dis_par_top,sep="")
+  over_720_params_top<-paste(over_720_centr_par_top,"_",over_720_dis_par_top,sep="")
+  
+  over_711_votes_top<-obj_1$clust_ID11[over_711_params_top]
+  over_713_votes_top<-obj_1$clust_ID13[over_713_params_top]
+  over_719_votes_top<-obj_1$clust_ID19[over_719_params_top]
+  over_720_votes_top<-obj_1$clust_ID20[over_720_params_top]
+
+  over_711_votes_top$major<-0
+  over_713_votes_top$major<-0
+  over_719_votes_top$major<-0
+  over_720_votes_top$major<-0
+  
+  
+  for(i in 1:15){
+    over_711_votes_top$major[i]<-names(sort(table(as.numeric(over_711_votes_top[i,])),decreasing=TRUE))[1]
+    over_713_votes_top$major[i]<-names(sort(table(as.numeric(over_713_votes_top[i,])),decreasing=TRUE))[1]
+    over_719_votes_top$major[i]<-names(sort(table(as.numeric(over_719_votes_top[i,])),decreasing=TRUE))[1]
+    over_720_votes_top$major[i]<-names(sort(table(as.numeric(over_720_votes_top[i,])),decreasing=TRUE))[1]
+  }
+  
+  data_obj$pred<-list()
+  data_obj$pred$data<-list()
+  data_obj$pred$data$over_711_votes_top<-over_711_votes_top
+  data_obj$pred$data$over_713_votes_top<-over_713_votes_top
+  data_obj$pred$data$over_719_votes_top<-over_719_votes_top
+  data_obj$pred$data$over_720_votes_top<-over_720_votes_top
+  
+  rm(list = c("over_711_dis_par_top","over_713_dis_par_top","over_719_dis_par_top","over_720_dis_par_top",
+              "over_711_params_top","over_713_params_top","over_719_params_top","over_720_params_top",
+              "over_711_votes_top","over_713_votes_top","over_719_votes_top","over_720_votes_top"))
+  
+  a11<-0
+  a13<-0
+  a19<-0
+  a20<-0
+  
+  #after finding the label of targets based on majority voting, I add the physiological data
+  
+  set.seed(seed_no)
+  # here I do regular prediction and then I try different ensembling for predicting clusters made through investigating step_time_SD
+  # I first need to be sure if there are more than one member from each levels of the TARGET column
+  if(!is.na((table(data_obj$pred$data$over_711_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_711_votes_top$major)[2]-1))){
+    a11<-1
+  if((table(data_obj$pred$data$over_711_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_711_votes_top$major)[2]-1)>0){
+    a11<-2
+  data_obj$pred$data$pred_711<-obj_1$data_table_ID3.4.5.6 
+  names(data_obj$pred$data$pred_711)<-c("ID","gender", "age", "weight", "height")
+  data_obj$pred$data$pred_711$TARGET<-as.numeric(data_obj$pred$data$over_711_votes_top$major)-1
+  
+  #first, I do simple leave-out prediction. 
+  #data: data used in the prediction
+  #TARGET: target variable
+  #vars<- independent variables
+  #ensembler: super learning algorithm in ensembling approach
+  #B_alg: sample balancing algorithm (RUS,SMOTE,NONE)
+  #cntr_type:specifying "trainControl" in the caret package, for more information check inside of the "leave_out" function
+  #method_pred: specifying if it is a regular preduction or an ensemble one
+  
+  data_obj$pred$regular_pred11<-leave_out(data<-data_obj$pred$data$pred_711,TARGET<-"TARGET",vars<-c( "gender", "age", "weight", "height") ,ensembler<-"none",
+                            B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+  
+  data_obj$pred$ensemble_pred11<-list()
+  # data_obj$pred$ensemble_pred11$ensemble_svm11<-leave_out(data_obj$pred$regular_pred11$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+  data_obj$pred$ensemble_pred11$ensemble_log11<-leave_out(data_obj$pred$regular_pred11$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+  data_obj$pred$ensemble_pred11$ensemble_rf11<-leave_out(data_obj$pred$regular_pred11$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+  data_obj$pred$ensemble_pred11$ensemble_nnet11<-leave_out(data_obj$pred$regular_pred11$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble") 
+  }
+  }
+  # end of the prediction 
+  
+
+  set.seed(seed_no)
+  # here I do regular prediction and then I try different ensembling for predicting clusters made through investigating step_distance_SD
+  # I first need to be sure if there are more than one member from each levels of the TARGET column
+  if(!is.na((table(data_obj$pred$data$over_713_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_713_votes_top$major)[2]-1))){
+    a13<-1
+  if((table(data_obj$pred$data$over_713_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_713_votes_top$major)[2]-1)>0){
+    a13<-2
+    data_obj$pred$data$pred_713<-obj_1$data_table_ID3.4.5.6
+    names(data_obj$pred$data$pred_713)<-c("ID","gender", "age", "weight", "height")
+    data_obj$pred$data$pred_713$TARGET<-as.numeric(data_obj$pred$data$over_713_votes_top$major)-1
+
+    #first, I do simple leave-out prediction.
+    #data: data used in the prediction
+    #TARGET: target variable
+    #vars<- independent variables
+    #ensembler: super learning algorithm in ensembling approach
+    #B_alg: sample balancing algorithm (RUS,SMOTE,NONE)
+    #cntr_type:specifying "trainControl" in the caret package, for more information check inside of the "leave_out" function
+    #method_pred: specifying if it is a regular preduction or an ensemble one
+
+    data_obj$pred$regular_pred13<-leave_out(data<-data_obj$pred$data$pred_713,TARGET<-"TARGET",vars<-c( "gender", "age", "weight", "height") ,ensembler<-"none",
+                                            B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+    data_obj$pred$ensemble_pred13<-list()
+    
+    # data_obj$pred$ensemble_pred13$ensemble_svm13<-leave_out(data_obj$pred$regular_pred13$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred13$ensemble_log13<-leave_out(data_obj$pred$regular_pred13$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred13$ensemble_rf13<-leave_out(data_obj$pred$regular_pred13$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred13$ensemble_nnet13<-leave_out(data_obj$pred$regular_pred13$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")
+   }
+  }
+  # end of the prediction
+
+
+  set.seed(seed_no)
+  # here I do regular prediction and then I try different ensembling for predicting clusters made through investigating step_peak_jrk_average
+  # I first need to be sure if there are more than one member from each levels of the TARGET column
+    if(!is.na((table(data_obj$pred$data$over_719_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_719_votes_top$major)[2]-1))){
+      a19<-1
+    if((table(data_obj$pred$data$over_719_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_719_votes_top$major)[2]-1)>0){
+    a19<-2
+    data_obj$pred$data$pred_719<-obj_1$data_table_ID3.4.5.6
+    names(data_obj$pred$data$pred_719)<-c("ID","gender", "age", "weight", "height")
+    data_obj$pred$data$pred_719$TARGET<-as.numeric(data_obj$pred$data$over_719_votes_top$major)-1
+
+    #first, I do simple leave-out prediction.
+    #data: data used in the prediction
+    #TARGET: target variable
+    #vars<- independent variables
+    #ensembler: super learning algorithm in ensembling approach
+    #B_alg: sample balancing algorithm (RUS,SMOTE,NONE)
+    #cntr_type:specifying "trainControl" in the caret package, for more information check inside of the "leave_out" function
+    #method_pred: specifying if it is a regular preduction or an ensemble one
+
+    data_obj$pred$regular_pred19<-leave_out(data<-data_obj$pred$data$pred_719,TARGET<-"TARGET",vars<-c( "gender", "age", "weight", "height") ,ensembler<-"none",
+                                            B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+    data_obj$pred$ensemble_pred19<-list()
+    # data_obj$pred$ensemble_pred19$ensemble_svm19<-leave_out(data_obj$pred$regular_pred19$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred19$ensemble_log19<-leave_out(data_obj$pred$regular_pred19$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred19$ensemble_rf19<-leave_out(data_obj$pred$regular_pred19$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred19$ensemble_nnet19<-leave_out(data_obj$pred$regular_pred19$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")
+    }
+  }
+  # end of the prediction
+
+
+
+   set.seed(seed_no)
+  # here I do regular prediction and then I try different ensembling for predicting clusters made through investigating step_peak_jrk_average
+  # I first need to be sure if there are more than one member from each levels of the TARGET column
+  if(!is.na((table(data_obj$pred$data$over_720_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_720_votes_top$major)[2]-1))){
+    a20<-1
+  if((table(data_obj$pred$data$over_720_votes_top$major)[1]-1)*(table(data_obj$pred$data$over_720_votes_top$major)[2]-1)>0){
+    a20<-2
+    data_obj$pred$data$pred_720<-obj_1$data_table_ID3.4.5.6
+    names(data_obj$pred$data$pred_720)<-c("ID","gender", "age", "weight", "height")
+    data_obj$pred$data$pred_720$TARGET<-as.numeric(data_obj$pred$data$over_720_votes_top$major)-1
+
+    #first, I do simple leave-out prediction.
+    #data: data used in the prediction
+    #TARGET: target variable
+    #vars<- independent variables
+    #ensembler: super learning algorithm in ensembling approach
+    #B_alg: sample balancing algorithm (RUS,SMOTE,NONE)
+    #cntr_type:specifying "trainControl" in the caret package, for more information check inside of the "leave_out" function
+    #method_pred: specifying if it is a regular preduction or an ensemble one
+
+    data_obj$pred$regular_pred20<-leave_out(data<-data_obj$pred$data$pred_720,TARGET<-"TARGET",vars<-c( "gender", "age", "weight", "height") ,ensembler<-"none",
+                                            B_alg<-"none",cntr_type<-"simple",method_pred<-"regular")
+
+    data_obj$pred$ensemble_pred20<-list()
+    # data_obj$pred$ensemble_pred20$ensemble_svm20<-leave_out(data_obj$pred$regular_pred20$resul_prob,"TARGET",c("log", "rf" ,"nnet","tan") ,"svm_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred20$ensemble_log20<-leave_out(data_obj$pred$regular_pred20$resul_prob,"TARGET",c("svm", "rf" ,"nnet","tan") ,"log_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred20$ensemble_rf20<-leave_out(data_obj$pred$regular_pred20$resul_prob,"TARGET",c("log", "svm" ,"nnet","tan") ,"rf_ens","none","simple","ensemble")
+    data_obj$pred$ensemble_pred20$ensemble_nnet20<-leave_out(data_obj$pred$regular_pred20$resul_prob,"TARGET",c("log", "svm" ,"rf","tan") ,"nnet_ens","none","simple","ensemble")
+  }
+  }
+
+  # end of the prediction
+  save(data_obj,file=paste(getwd(),"/","IoT_object_seed_",seed_no,"_votes_",top_alg,".RData",sep=""))
+
+```
+
+<br />
+<br />
+<br />
+the next table shows labels of top `r top_alg` clustering algorithm which over lap of step_time_SD and Borg's rate was the highest. In the major column, the cluster label is assigned based on majority of votes in the algorithms. column names' format represent parameters of clustering algorithm and is as: "centroid parameter"_"distance parameter"
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+  DT::datatable(data_obj$pred$data$over_711_votes_top)
+```
+<br />
+the next table shows performance of machine learning algorithms in predictive labels of clusters in the previous table
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+    if(!is.null(data_obj$pred$regular_pred11$performance)){
+  DT::datatable(data_obj$pred$regular_pred11$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+For improving performance of prediction, I adopted random Forest Ensembler as the super learner (and output of other models as inputs) over the previous machine learning algorithms and the results are demonstrated below:
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+   if(!is.null(data_obj$pred$ensemble_pred11$ensemble_rf11$performance)){
+ DT::datatable(data_obj$pred$ensemble_pred11$ensemble_rf11$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+<br />
+<br />
+
+
+
+
+the next table shows labels of top `r  top_alg` clustering algorithm which over lap of step_distance_SD and Borg's rate was the highest. In the major column, the cluster label is assigned based on majority of votes in the algorithms. column names' format represent parameters of clustering algorithm and is as: "centroid parameter"_"distance parameter"
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+  DT::datatable(data_obj$pred$data$over_713_votes_top)
+```
+<br />
+the next table shows performance of machine learning algorithms in predictive labels of clusters in the previous table
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+    if(!is.null(data_obj$pred$regular_pred13$performance)){
+  DT::datatable(data_obj$pred$regular_pred13$performance)
+}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+  
+```
+<br />
+For improving performance of prediction, I adopted random Forest Ensembler as the super learner (and output of other models as inputs) over the previous machine learning algorithms and the results are demonstrated below:
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+   if(!is.null(data_obj$pred$ensemble_pred13$ensemble_rf13$performance)){
+ DT::datatable(data_obj$pred$ensemble_pred13$ensemble_rf13$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+<br />
+<br />
+
+
+
+the next table shows labels of top `r  top_alg` clustering algorithm which over lap of step_peak_jrk_average and Borg's rate was the highest. In the major column, the cluster label is assigned based on majority of votes in the algorithms. column names' format represent parameters of clustering algorithm and is as: "centroid parameter"_"distance parameter"
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+  DT::datatable(data_obj$pred$data$over_719_votes_top)
+```
+<br />
+the next table shows performance of machine learning algorithms in predictive labels of clusters in the previous table
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+    if(!is.null(data_obj$pred$regular_pred19$performance)){
+  DT::datatable(data_obj$pred$regular_pred19$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+For improving performance of prediction, I adopted random Forest Ensembler as the super learner (and output of other models as inputs) over the previous machine learning algorithms and the results are demonstrated below:
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+   if(!is.null(data_obj$pred$ensemble_pred19$ensemble_rf19$performance)){
+ DT::datatable(data_obj$pred$ensemble_pred19$ensemble_rf19$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+
+<br />
+<br />
+<br />
+the next table shows labels of top `r  top_alg` clustering algorithm which over lap of overall_average_angle_back_bent and Borg's rate was the highest. In the major column, the cluster label is assigned based on majority of votes in the algorithms. column names' format represent parameters of clustering algorithm and is as: "centroid parameter"_"distance parameter"
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+  DT::datatable(data_obj$pred$data$over_720_votes_top)
+```
+<br />
+the next table shows performance of machine learning algorithms in predictive labels of clusters in the previous table
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+    if(!is.null(data_obj$pred$regular_pred20$performance)){
+  DT::datatable(data_obj$pred$regular_pred20$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+For improving performance of prediction, I adopted random Forest Ensembler as the super learner (and output of other models as inputs) over the previous machine learning algorithms and the results are demonstrated below:
+```{r , message=FALSE, cache=FALSE, error=FALSE}
+   if(!is.null(data_obj$pred$ensemble_pred20$ensemble_rf20$performance)){
+ DT::datatable(data_obj$pred$ensemble_pred20$ensemble_rf20$performance)}else{cat("at least one of the cluster categories dosn't have more than one  subjeccts")}
+```
+<br />
+<br />
+<br />
+****
+
+
+
